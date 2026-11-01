@@ -71,7 +71,7 @@ A code review found 7 issues, all fixed:
    5. one small cloud host, not the Mac mini
 4. **Content:** Act 2 (6–8 acts per chapter), the kite gate, festival minigames (gasing, kite
    duels, sepak takraw, boat races), more skills one monsoon at a time.
-5. **Repo:** this lives on a branch of `zuzivian/new-repo`, which also holds unrelated earlier
+5. **Repo:** the game lives in `zuzivian/temasek-1360` (moved from a branch of `zuzivian/new-repo` on 1 Nov 2026). The old local branch there was never pushed.
    prototypes. Consider giving the game its own repo, as Derby Day and Ring Studio got.
 
 ## Gotchas
