@@ -18,8 +18,15 @@ const script = html.match(/<script type="module"[^>]*><\/script>/)[0];
 // The artifact host supplies doctype, html, head and body, so the page is just its content.
 writeFileSync('artifact/index.html', `${head}\n${body}\n${script}\n`);
 
+// site/: the full standalone page for a static host (Vercel serves this at temasek.natwong.dev).
+rmSync('site', { recursive: true, force: true });
+mkdirSync('site', { recursive: true });
+cpSync('dist', 'site/dist', { recursive: true });
+cpSync('styles.css', 'site/styles.css');
+cpSync('index.html', 'site/index.html');
+
 const files = [];
 const walk = d => { for (const f of readdirSync(d)) { const p = join(d, f); statSync(p).isDirectory() ? walk(p) : files.push(p); } };
 walk('artifact');
 const bytes = files.reduce((n, f) => n + statSync(f).size, 0);
-console.log(`built dist/ and artifact/ (${files.length} files, ${(bytes / 1024).toFixed(0)} KB)`);
+console.log(`built dist/, site/ and artifact/ (${files.length} files, ${(bytes / 1024).toFixed(0)} KB)`);

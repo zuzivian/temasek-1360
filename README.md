@@ -20,6 +20,10 @@ Click to walk, talk and fish. In fights, click a blue tile to move and a foe to 
 press **Space** as the ring closes for a bonus. Turn on *Auto timing* on the title screen if you
 never want to time anything. Scroll to zoom. Progress saves to this browser automatically.
 
+## Deploy
+
+`main` deploys to Vercel at **temasek.natwong.dev**. The build command is `npm run build`, and Vercel serves the standalone page in `site/`. `artifact/` is the same game shaped for a claude.ai artifact.
+
 ## The loop in Act 1
 
 1. **Wake** in a seed pod on the beach. Pak Lawak, a clown, decides you're a talking prawn.

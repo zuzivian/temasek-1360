@@ -12,5 +12,6 @@
     "smoke": "node scripts/smoke.mjs",
     "check": "npm run typecheck && npm test && npm run build"
   },
-  "engines": { "node": ">=22.18" }
+  "engines": { "node": ">=22.18" },
+  "devDependencies": { "typescript": "6.0.2" }
 }

@@ -49,3 +49,4 @@ dist/
 artifact/
 smoke/
 *.log
+site/
