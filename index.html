@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Temasek 1360</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Marcellus+SC&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!--GAME-->
+<canvas id="game" aria-label="Temasek, about 1360: an isometric river-mouth village drawn with painted wayang puppets"></canvas>
+
+<div id="hud" hidden>
+  <div id="topleft" class="card">
+    <div class="loc">Temasek <span>· Kuala</span></div>
+    <div class="goal"><small id="act">Babak I</small><span id="goal"></span></div>
+  </div>
+  <div id="topright">
+    <div id="monsoon" class="card" title="The monsoon decides the fish, the traders and the rain">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path id="windArrow" d="M12 3v18M12 21l-6-6M12 21l6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <div><b id="mname"></b><small id="mleft"></small></div>
+    </div>
+    <div id="picis" class="card" title="Picis: copper coins on a string"><i class="coin"></i><b id="pval">0</b></div>
+    <button id="mute" class="card iconbtn" type="button" aria-label="Sound on or off">♪</button>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <div id="panel" class="card">
+    <div class="tabs" role="tablist">
+      <button type="button" id="tab-bag" data-tab="bag" aria-pressed="true">Bag</button>
+      <button type="button" id="tab-skills" data-tab="skills" aria-pressed="false">Skills</button>
+      <button type="button" id="tab-quest" data-tab="quest" aria-pressed="false">Quest</button>
+    </div>
+    <div id="bag" class="tabbody"></div>
+    <div id="skills" class="tabbody" hidden></div>
+    <div id="quest" class="tabbody" hidden></div>
+  </div>
+
+  <div id="dialog" class="card" hidden>
+    <canvas id="portrait" width="112" height="112"></canvas>
+    <div class="dbody">
+      <b id="dname"></b>
+      <p id="dtext"></p>
+      <div id="dopts"></div>
+    </div>
+  </div>
+
+  <div id="shop" class="card" hidden>
+    <div class="shophead"><b id="shopname"></b><small id="shopnote"></small><button type="button" id="shopclose" class="iconbtn" aria-label="Close">✕</button></div>
+    <div class="shopcols">
+      <div><small>Your catch · click to sell</small><div id="sellgrid"></div><button type="button" id="sellall" class="wide">Sell all fish</button></div>
+      <div><small>For sale</small><div id="buylist"></div></div>
+    </div>
+  </div>
+
+  <div id="combat" hidden>
+    <div id="order" class="card"></div>
+    <div id="cbar" class="card">
+      <div id="abilities"></div>
+      <div id="pips"><div><small>AP</small><span id="ap"></span></div><div><small>MP</small><span id="mp"></span></div></div>
+      <button type="button" id="endturn">End turn <kbd>E</kbd></button>
+    </div>
+    <div id="chint"></div>
+  </div>
+
+  <div id="hoverlabel"></div>
+  <div id="banner"></div>
+</div>
+
+<div id="title">
+  <div class="titlecard">
+    <p class="kicker">Babak I · Gong yang Hilang</p>
+    <h1>Temasek <span>1360</span></h1>
+    <p class="blurb">A seed fell from the stars into the Strait.<br>Tonight, it opened.</p>
+    <div class="titlebtns">
+      <button type="button" id="start" class="big">Mula · Start</button>
+      <button type="button" id="continue" class="big alt" hidden>Sambung · Continue</button>
+    </div>
+    <div class="opts">
+      <label><input type="checkbox" id="opt-sound" checked> Sound</label>
+      <label><input type="checkbox" id="opt-autotime"> Auto timing (never need to press on the beat)</label>
+    </div>
+    <p class="howto"><b>Click</b> to walk, talk and fish · <b>Space</b> when a ring closes · <b>Scroll</b> to zoom</p>
+    <p class="fine">Working-title prototype · original setting inspired by early Singapore and Majapahit-era Nusantara</p>
+  </div>
+</div>
+<!--/GAME-->
+<script type="module" src="dist/client/main.js"></script>
+</body>
+</html>
