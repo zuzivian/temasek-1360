@@ -63,8 +63,16 @@ try {
     const dist = Math.abs(target.x - f.you.x) + Math.abs(target.y - f.you.y);
     if (dist > 4 || dist < 2) {
       const keys = await page.evaluate(() => window.__game.reach());
-      const pick = keys.map(k => k.split(',').map(Number)).sort((a, b) => Math.abs(Math.abs(a[0] - target.x) + Math.abs(a[1] - target.y) - 3) - Math.abs(Math.abs(b[0] - target.x) + Math.abs(b[1] - target.y) - 3))[0];
-      if (pick) { const p = await page.evaluate(([x, y]) => window.__game.toScreen(x, y), pick); await page.mouse.click(p.x, p.y); await page.waitForTimeout(1500); }
+      const picks = keys.map(k => k.split(',').map(Number)).sort((a, b) => Math.abs(Math.abs(a[0] - target.x) + Math.abs(a[1] - target.y) - 3) - Math.abs(Math.abs(b[0] - target.x) + Math.abs(b[1] - target.y) - 3));
+      // A puppet standing in front of a tile covers it on screen, so a click there picks the unit
+      // instead (this depends on the random seed). Try the next tile until the step lands.
+      for (const pick of picks.slice(0, 6)) {
+        const p = await page.evaluate(([x, y]) => window.__game.toScreen(x, y), pick);
+        await page.mouse.click(p.x, p.y);
+        await page.waitForTimeout(300);
+        const me = await page.evaluate(() => window.__game.world.combat?.units[0]);
+        if (!me || me.x !== f.you.x || me.y !== f.you.y) { await page.waitForTimeout(1200); break; }
+      }
     }
     f = await fight();
     const hpBefore = f.foes.reduce((n, o) => n + o.hp, 0);

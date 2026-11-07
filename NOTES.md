@@ -77,6 +77,9 @@ A code review found 7 issues, all fixed:
   toggle buttons.
 - **Check:** `scripts/smoke.mjs` presses Enter on an ability button in the first fight. It fails on the
   old code.
+- **Smoke flake fixed:** a move click on a tile covered on screen by a puppet standing in front
+  (often Pak Lawak, whose spot depends on the random seed) picks the unit instead. The test now tries
+  the next tile until the step lands.
 
 ## Not done / next
 
