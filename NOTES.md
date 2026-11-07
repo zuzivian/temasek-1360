@@ -65,6 +65,19 @@ A code review found 7 issues, all fixed:
 - **Test:** `after a fight, the calm only holds back encounters you were already standing in`. It
   fails on the old code.
 
+## Keyboard fixes (7 Nov, autopilot run 2)
+
+- **Enter on a focused ability button ended your turn.** The global Enter = End turn shortcut fired as
+  well as the button. A focused button now owns Enter, and Space too, except during a timing ring or
+  an open dialogue (so mashing Space through a conversation never picks an answer).
+- **Focus was wiped on every HUD refresh.** Dialogue buttons are now rebuilt only for a new line, and
+  the first answer gets focus. The focused ability button keeps focus across rebuilds. A mouse click on
+  End turn drops focus, so a stray Space next turn can't end it.
+- The Bag/Skills/Quest buttons claimed `role="tablist"` without being tabs; now a labelled group of
+  toggle buttons.
+- **Check:** `scripts/smoke.mjs` presses Enter on an ability button in the first fight. It fails on the
+  old code.
+
 ## Not done / next
 
 1. **Nat playtest by hand:**
@@ -73,6 +86,7 @@ A code review found 7 issues, all fixed:
    - timing ring windows (attack: perfect within ±0.09 s, good within ±0.22 s)
    - text length
    - sound levels (never heard by a human)
+   - keyboard only: Tab to the dialogue answers and abilities, Enter to press them
 2. **Decide the tentative calls** in `docs/DESIGN.md`, especially who the player is, and the
    pirate lords.
 3. **Networking roadmap:**

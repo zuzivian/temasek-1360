@@ -69,6 +69,15 @@ try {
     f = await fight();
     const hpBefore = f.foes.reduce((n, o) => n + o.hp, 0);
     console.log('before attack', JSON.stringify(f));
+    if (round === 0) {
+      // keyboard: Enter on a focused ability button picks it and must not end the turn
+      await page.focus('#abilities .ab:nth-child(1)');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(100);
+      const k = await page.evaluate(() => { const c = window.__game.world.combat; return { cur: c.order[c.turn], picked: !!document.querySelector('#abilities .ab:nth-child(1)[aria-pressed="true"]') }; });
+      if (k.cur !== 'you' || !k.picked) errors.push(`Enter on an ability button: ${JSON.stringify(k)}`);
+      await page.keyboard.press('Escape');
+    }
     await page.click('#abilities .ab:nth-child(2)', { timeout: 3000 });
     const tp = await page.evaluate(([x, y]) => window.__game.toScreen(x, y), [target.x, target.y]);
     await page.mouse.click(tp.x, tp.y - 40);
