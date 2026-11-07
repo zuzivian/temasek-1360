@@ -4,7 +4,7 @@
 import { aiTick, playerAct, startCombat, unitById, type CombatEvent, type CombatIntent, type CombatState } from './combat.ts';
 import {
   DIALOG, ENCOUNTERS, FISH, GEAR, INV_SLOTS, ITEMS, MONSOON_NAME, MONSOON_TICKS, MONSOON_WIND, NPCS, QUEST, RESPAWN, SHOPS, SPOTS, START, openingNode,
-  type AbilityId, type DialogAct, type FishId, type GearId, type ItemId, type Monsoon, type NpcId
+  type AbilityId, type DialogAct, type EncounterSpec, type FishId, type GearId, type ItemId, type Monsoon, type NpcId
 } from './content.ts';
 import { chebyshev, rngNext, type Vec } from './core.ts';
 import { MAP, walkable } from './map.ts';
@@ -35,6 +35,12 @@ export type World = {
   shop: 'rahmah' | 'lim' | 'ratan' | null;
   /** No new fight can start before this tick, so one fight never chains straight into another. */
   calmUntil?: number;
+  /**
+   * The encounters whose trigger zone you were standing in when the last fight ended: only these
+   * wait for calmUntil. A zone you walk into during the calm still starts at its edge, so you can't
+   * stroll into the middle of the next arena. Saves from before this field calm every encounter.
+   */
+  calmFor?: EncounterSpec['id'][];
 };
 
 export type Intent =
@@ -290,6 +296,7 @@ function endCombat(w: World, won: boolean, ev: Ev[]): void {
   const enc = w.enc.find(e => e.id === c.enc)!;
   w.combat = null;
   w.calmUntil = w.tick + 8;
+  w.calmFor = won ? ENCOUNTERS.filter(e => chebyshev(you, e.center) <= e.trigger).map(e => e.id) : [];
   ev.push({ t: 'combatEnd', won });
   if (won) {
     w.player.hp = Math.max(1, Math.min(maxHp(w), you.hp));
@@ -318,9 +325,10 @@ function endCombat(w: World, won: boolean, ev: Ev[]): void {
 }
 
 function checkEncounters(w: World, ev: Ev[]): void {
-  if (w.tick < (w.calmUntil ?? 0)) return;
+  const calm = w.tick < (w.calmUntil ?? 0);
   for (const e of w.enc) {
     const spec = ENCOUNTERS.find(s => s.id === e.id)!;
+    if (calm && (!w.calmFor || w.calmFor.includes(e.id))) continue;
     // Patrols come back for practice only once Act 1 is done, so the story path stays clear.
     if (!e.alive && spec.repeat && w.step >= 7 && w.tick >= e.respawnAt) e.alive = true;
     if (!e.alive || w.step < spec.requiresStep) continue;

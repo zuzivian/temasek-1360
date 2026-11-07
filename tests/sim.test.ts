@@ -154,3 +154,46 @@ test('a trader who sails away takes the shop and the conversation', async () => 
   act(w, { t: 'say', option: 0 });
   assert.equal(w.shop, null, 'Lim is gone in the south-west monsoon');
 });
+
+test('after a fight, the calm only holds back encounters you were already standing in', async () => {
+  const { act } = await import('../src/sim/world.ts');
+  const todak = ENCOUNTERS.find(e => e.id === 'todak')!;
+  // Win the patrol with the hero's last position at `endAt`, through the real rules.
+  const winPatrolAt = (endAt: { x: number; y: number }) => {
+    const w = newWorld(7);
+    w.step = 4; w.flags.asked_penghulu = true; w.lawak.following = true;
+    w.player.x = 32; w.player.y = 21;
+    step(w, []);
+    assert.equal(w.combat?.enc, 'patrol', 'patrol starts');
+    for (const u of w.combat!.units) if (u.side === 'foe') u.hp = 1;
+    for (let i = 0; i < 400 && w.combat; i++) {
+      const c = w.combat!;
+      if (c.order[c.turn] !== 'you') { step(w, []); continue; }
+      const foe = c.units.find(u => u.side === 'foe' && u.alive)!;
+      const you = c.units[0];
+      foe.x = endAt.x + 1; foe.y = endAt.y; you.x = endAt.x; you.y = endAt.y; you.ap = 6;
+      act(w, { t: 'combat', it: { t: 'use', ability: 'tendang', target: foe.id, grade: 'none' } });
+      if (w.combat) act(w, { t: 'combat', it: { t: 'end' } });
+    }
+    assert.equal(w.combat, null, 'patrol won');
+    step(w, []);
+    assert.equal(w.step, 5);
+    return w;
+  };
+
+  // Ending the patrol inside Si Todak's zone: no instant boss fight, but it does come after the calm.
+  const inside = winPatrolAt({ x: todak.center.x - todak.trigger, y: todak.center.y });
+  step(inside, []);
+  assert.equal(inside.combat, null, 'the boss waits out the calm');
+  for (let i = 0; i < 10 && !inside.combat; i++) step(inside, []);
+  assert.equal(inside.combat?.enc, 'todak', 'the boss starts once the calm ends');
+
+  // Ending outside it and walking in during the calm: the fight starts at the zone's edge, not its middle.
+  const outside = winPatrolAt({ x: 32, y: 19 });
+  assert.ok(outside.tick < (outside.calmUntil ?? 0), 'still calm');
+  act(outside, { t: 'walk', to: todak.center });
+  for (let i = 0; i < 20 && !outside.combat; i++) step(outside, []);
+  assert.equal(outside.combat?.enc, 'todak');
+  const you = outside.combat!.units[0];
+  assert.ok(Math.max(Math.abs(you.x - todak.center.x), Math.abs(you.y - todak.center.y)) >= todak.trigger, `starts at the edge (${you.x},${you.y})`);
+});
