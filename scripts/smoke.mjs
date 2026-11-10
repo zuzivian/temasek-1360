@@ -1,6 +1,7 @@
 // Browser smoke test: serves the repo, opens the game in headless Chromium, plays a few beats
 // through the real UI, fails on any page error, and saves screenshots to smoke/. Then it plays
 // a short stretch through the game server (server/main.ts) and checks the offline fallback.
+// In between, two pages share the world through /api/world (what the deployed site runs).
 // Usage: node scripts/smoke.mjs   (needs Playwright; set CHROMIUM=/path/to/chrome to override)
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -22,7 +23,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', e => errors.push(`pageerror: ${e.message}`));
   page.on('console', m => { if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)|ERR_TUNNEL|net::ERR/.test(m.text())) errors.push(`console: ${m.text()}`); });
-  await page.goto(`http://localhost:${port}/`);
+  await page.goto(`http://localhost:${port}/?offline`);
   await page.waitForTimeout(600);
   await page.screenshot({ path: 'smoke/1-title.png' });
   await page.click('#start');
@@ -96,6 +97,53 @@ try {
   const state = await page.evaluate(() => ({ step: window.__game.world.step, combat: !!window.__game.world.combat, hp: window.__game.world.player.hp, silat: window.__game.world.skills.silat }));
   console.log(JSON.stringify(state));
   if (!(state.silat > 0)) errors.push('no Silat XP from the fight');
+
+  // Shared world: two pages on the same static host + /api/world, as on Vercel. Each runs its own
+  // rules on the realm clock; they should see each other and show the same monsoon countdown.
+  {
+    const posts = [];
+    const live = async name => {
+      const p = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      p.on('pageerror', e => errors.push(`${name} pageerror: ${e.message}`));
+      p.on('request', r => { if (r.url().endsWith('/api/world') && r.method() === 'POST') posts.push(Date.now()); });
+      await p.goto(`http://localhost:${port}/`);
+      await p.click('#start');
+      await p.waitForFunction(() => window.__game.mode === 'live', null, { timeout: 5000 });
+      return p;
+    };
+    const l1 = await live('live 1'), l2 = await live('live 2');
+    await l2.evaluate(() => window.__game.act({ t: 'walk', to: { x: 12, y: 27 } }));
+    try {
+      await l1.waitForFunction(() => window.__game.others.length === 1, null, { timeout: 12000 });
+      await l2.waitForFunction(() => window.__game.others.length === 1, null, { timeout: 12000 });
+    } catch { errors.push(`live: the two players did not see each other (${await l1.evaluate(() => window.__game.others.length)}, ${await l2.evaluate(() => window.__game.others.length)})`); }
+    const clock = p => p.evaluate(() => ({ tick: window.__game.world.tick, left: document.getElementById('mleft').textContent, name: document.getElementById('mname').textContent }));
+    const [c1, c2] = [await clock(l1), await clock(l2)];
+    if (Math.abs(c1.tick - c2.tick) > 1 || c1.name !== c2.name) errors.push(`live: different clocks ${JSON.stringify([c1, c2])}`);
+    const leftSecs = s => { const m = /(\d+):(\d+)/.exec(s); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
+    if (!(Math.abs(leftSecs(c1.left) - leftSecs(c2.left)) <= 1)) errors.push(`live: different monsoon countdowns ${c1.left} vs ${c2.left}`);
+    await l1.waitForTimeout(1200);
+    await l1.screenshot({ path: 'smoke/11-shared-world.png' });
+    // Hiding a tab says goodbye at once (sendBeacon) and stops its requests, so the other page
+    // stops seeing it. (Closing a headless context can drop the beacon, so hide it instead.)
+    const l2posts = () => l2.evaluate(() => window.__game.live.posts);
+    await l2.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    const hiddenAt = await l2posts();
+    try { await l1.waitForFunction(() => window.__game.others.length === 0, null, { timeout: 8000 }); }
+    catch { errors.push(`live: a hidden tab was still on the beach ${JSON.stringify(await l1.evaluate(() => window.__game.others))}`); }
+    const t0 = Date.now(), before = posts.length;
+    await l1.waitForTimeout(10_000);
+    const rate = (posts.length - before) / ((Date.now() - t0) / 1000);
+    if (rate > 0.35) errors.push(`live: a lone player posted ${rate.toFixed(2)}/s, expected about 0.2/s`);
+    if ((await l2posts()) !== hiddenAt) errors.push('live: a hidden tab kept posting');
+    await l2.close();
+    console.log(`live ok: ${c1.name}, ${c1.left} on both pages; ${posts.length} presence posts in all, ${rate.toFixed(2)}/s alone`);
+    await l1.close();
+  }
 
   // Online: the same page against the game server (server/main.ts), then the server goes away
   // mid-game and the page must carry on offline.

@@ -3,11 +3,11 @@
 import { ABILITIES, ENCOUNTERS, SPOTS, type AbilityId } from '../src/sim/content.ts';
 import { canUse, current, reachable, type Grade } from '../src/sim/combat.ts';
 import { manhattan, type Vec } from '../src/sim/core.ts';
-import { count, newWorld, step, type Intent, type World } from '../src/sim/world.ts';
+import { count, newWorld, setClock, step, type Intent, type World } from '../src/sim/world.ts';
 import { MONSOON_WIND } from '../src/sim/content.ts';
 import { monsoonAt } from '../src/sim/world.ts';
 
-export type BotOpts = { seed?: number; grade?: Grade; dodge?: Grade; maxTicks?: number; jamuStock?: number };
+export type BotOpts = { seed?: number; grade?: Grade; dodge?: Grade; maxTicks?: number; jamuStock?: number; startTick?: number };
 export type BotResult = { world: World; ticks: number; fights: { enc: string; won: boolean; ticks: number }[]; finished: boolean };
 
 function combatIntent(w: World, grade: Grade, dodge: Grade): Intent | null {
@@ -83,6 +83,8 @@ export const act1Done = (w: World): boolean => w.step >= 7 && !w.dialog;
 
 export function playAct1(opts: BotOpts = {}): BotResult {
   const w = newWorld(opts.seed ?? 1360);
+  if (opts.startTick) setClock(w, opts.startTick);
+  const t0 = w.tick;
   const maxTicks = opts.maxTicks ?? 20000;
   const fights: BotResult['fights'] = [];
   const mind: BotMind = { sold: false };
@@ -94,9 +96,9 @@ export function playAct1(opts: BotOpts = {}): BotResult {
     const ev = step(w, intents);
     if (!wasFighting && w.combat) fightStart = w.tick;
     for (const e of ev) if (e.t === 'combatEnd') fights.push({ enc: enc ?? '?', won: e.won, ticks: w.tick - fightStart });
-    if (act1Done(w)) return { world: w, ticks: w.tick, fights, finished: true };
+    if (act1Done(w)) return { world: w, ticks: w.tick - t0, fights, finished: true };
   }
-  return { world: w, ticks: w.tick, fights, finished: false };
+  return { world: w, ticks: w.tick - t0, fights, finished: false };
 }
 
 export { SPOTS };

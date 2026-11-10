@@ -406,7 +406,7 @@ export function render(ctx: CanvasRenderingContext2D, v: View, width: number, he
         depth: op.x + op.y + 0.55, draw: () => {
           if (o.fishing !== undefined) drawLine(ctx, ox, oy, o.fishing, t, o.facing);
           drawPuppet(ctx, 'hero', ox, oy - 4 - bob(v, op), S, o.facing, t, { phase: o.id, alpha: o.fighting ? 0.45 : 0.9 });
-          playerTag(ctx, ox, oy - 92, `Pemain ${o.id}${o.fighting ? ' · bertarung' : ''}`);
+          playerTag(ctx, ox, oy - 92, `Pemain ${o.id % 1000}${o.fighting ? ' · bertarung' : ''}`);
         }
       });
     }

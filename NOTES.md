@@ -3,6 +3,72 @@
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
 
+## Done (10 Nov 2026): a shared world on the live site (branch `autopilot/temasek-1360-live`)
+
+The deployed site (Vercel, static `site/`) had no server, so every tab played alone. Constraint from Nat: very
+light, free tier, cost only while people are actually playing, no VM ticking around the clock.
+
+**Options weighed**
+
+| Option | Idle cost | Fits? | Why not / why |
+|---|---|---|---|
+| Node game server (`server/`) on a VM | always on | no | ticks 24/7 even with nobody there |
+| Cloudflare Durable Objects, hibernating WebSockets | ~0 | yes | real authoritative realm, but a new account, a second deploy and a port of `server/` to Workers |
+| PartyKit-style hibernating rooms | ~0 | yes | same as above (it is Durable Objects underneath), one more vendor |
+| **Vercel function + Upstash Redis (chosen)** | **0 requests, 0 storage** | **yes** | already connected; no new deploy target; nothing runs unless a visible tab asks |
+
+**How it works**
+
+- **The clock is a function of time, not a loop.** `src/net/clock.ts`: realm tick = `floor((now − 1 Nov 2026 UTC) / 600 ms)`.
+  Every tab computes the same tick, so the monsoon, who's in port and the countdown agree everywhere with no server
+  state at all. The only thing a tab needs from the server is the time (to correct its own clock, ±RTT/2).
+- **Joining moves your World onto the realm clock.** `setClock()` in `world.ts` jumps `tick` and shifts the tick-based
+  timers (fight cool-down, respawns) by the same amount; if the jump crosses a monsoon it turns exactly as `step()` does
+  (closes a departed trader's shop). That's the "what does a loaded save's clock mean" call: **the realm's**. Tested
+  with the Act 1 bot starting at a realm tick.
+- **Rules still run in the tab** (`LiveLink` wraps a `GameHost`, like the loopback), ticked up to the realm tick each
+  frame (one tick per frame in a fight, as before). Back from a long-hidden tab it jumps instead of replaying.
+- **Presence is the only shared state.** `api/world.ts` → `src/net/presence.ts`. A visible, active tab POSTs its pose
+  (position, facing, the next ≤8 path tiles, fishing/fighting) every **5 s alone / 2 s with someone in view**, and
+  gets back the players within `SEE_RADIUS` (keeps them to `FORGET_RADIUS`, as the WebSocket realm does). Others'
+  walks are played forward on the shared clock between posts, so they don't jump.
+- **Hidden or idle tabs send nothing.** `visibilitychange` hidden → a `sendBeacon` leave and the timer stops; no input
+  for 2 min → leave; any input → rejoin. A tab that vanishes without a beacon drops out after 15 s.
+- **Storage:** one Redis hash, one HTTP request = 3 commands (HSET, PEXPIRE 60 s, HGETALL) per post. The hash expires
+  60 s after the last post, so an empty realm stores nothing. Without KV env vars the function keeps presence in its
+  own memory (`store: "memory"` in every reply), which works only while all players hit the same instance; fine for a
+  preview, not for real use.
+- **Identity:** each tab makes a random 128-bit token; others see only `sha256(token)` → a 31-bit id, so nobody can post
+  or leave as someone else. Capped at `MAX_PLAYERS` (64).
+- **Fallbacks:** no `/api/world` (plain static host, `scripts/serve.mjs --static`) → offline as before. `?offline`
+  forces offline; `?server` still uses the WebSocket game server. If posts fail mid-game the game carries on, on the
+  realm clock, retrying with backoff up to 60 s.
+- **Local:** `node scripts/serve.mjs` now also answers `/api/world` (memory store), so two local tabs share the world.
+
+**Cost, at free-tier limits (Nov 2026; re-check the plan pages)**
+
+- Requests per player-hour: 720 alone, 1,800 with someone in view. Zero players: zero.
+- Upstash Redis free: 500K commands/month → ~230 player-hours alone or ~90 together per month. Over the cap Upstash
+  refuses commands (no charge on the free plan); the game then just shows nobody else.
+- Vercel Hobby: 1M function invocations/month → ~550+ player-hours. Hobby can't be billed for overage; it pauses.
+- Expected cost: **$0**.
+
+**Tests:** `tests/live.test.ts` (12): clock maths, `setClock` timers and monsoon turn, Act 1 on the realm clock, request
+validation, `poseAt`, visibility and forgetting, stale expiry, the player cap, the Redis store (one request, three
+commands, auth header, damaged records), LiveLink's lazy ticking and long-gap jump, posting only while visible and
+active (and slower alone), and an e2e of two LiveLinks on the real `api/world.ts` handlers seeing each other with the
+same monsoon countdown. `scripts/smoke.mjs` adds the same in Chromium on `serve.mjs`: two pages see each other, same
+monsoon name and countdown (±1 s), a hidden page leaves and stops posting, a lone page posts ~0.2/s
+(`smoke/11-shared-world.png`). The first smoke section now runs with `?offline`.
+
+**Gotchas / next**
+
+- Presence trusts the client's pose (no accounts yet), like the WebSocket server trusts saves.
+- The node WebSocket server (`server/`) still keeps per-World clocks; it could adopt `realmTick` too.
+- Clock skew: a phone whose clock is minutes off is corrected by the server time on the first request; if that request
+  fails the tab plays offline on its own clock.
+- Headless Chromium drops a beacon when its whole context closes, so smoke tests hiding, not closing.
+
 ## Done (10 Nov 2026): networking roadmap step 2, first slice (branch `autopilot/temasek-1360-server-2`)
 
 - **`src/net/realm.ts`, `Realm`:** the server now runs one shared realm instead of one world per connection.
