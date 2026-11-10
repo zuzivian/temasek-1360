@@ -5,8 +5,10 @@ import { canUse, current, reachable, unitById, type Grade } from '../sim/combat.
 import { TICK_MS, type Vec } from '../sim/core.ts';
 import { MAP, elevAt, kindAt, walkable } from '../sim/map.ts';
 import { SKILLS, levelForXp, levelProgress, type SkillId } from '../sim/skills.ts';
-import { act, count, load, maxHp, monsoonAt, monsoonLeft, newWorld, save, shopPrice, step, type Ev, type Intent, type World } from '../sim/world.ts';
+import { count, load, maxHp, monsoonAt, monsoonLeft, newWorld, save, shopPrice, type Ev, type Intent, type World } from '../sim/world.ts';
+import type { Update } from '../net/protocol.ts';
 import * as audio from './audio.ts';
+import { LoopbackLink, SocketLink, serverUrl, type Link } from './net.ts';
 import { drawPortrait } from './puppets.ts';
 import { EH, EL_COLOR, iso, render, screenToTile, type HitBox, type View } from './render.ts';
 
@@ -39,6 +41,7 @@ let started = false;
 const view: View = {
   w: world, t: 0, alpha: 1,
   playerFrom: { x: world.player.x, y: world.player.y }, lawakFrom: { x: world.lawak.x, y: world.lawak.y },
+  others: [], othersFrom: new Map(),
   unitAnims: new Map(), hover: null, clickMark: null, floaters: [], shots: [],
   combatUi: { ability: null, hoverUnit: null, ring: null }, flashes: new Map(),
   zoom: Math.max(0.8, Math.min(1.5, window.innerHeight / 760))
@@ -188,8 +191,8 @@ function showShop(): void {
 $('shopclose').addEventListener('click', () => doAct({ t: 'close' }));
 $('sellall').addEventListener('click', () => {
   if (!world.shop) return;
-  for (let i = world.inv.length - 1; i >= 0; i--) if (shopPrice(world.shop, world.inv[i].id)) applyEvents(act(world, { t: 'sell', slot: i }));
-  afterChange();
+  const shop = world.shop, inv = world.inv.slice();
+  for (let i = inv.length - 1; i >= 0; i--) if (shopPrice(shop, inv[i].id)) doAct({ t: 'sell', slot: i });
 });
 
 // ---------- combat HUD ----------
@@ -349,10 +352,46 @@ function afterChange(): void {
   refreshTop(); refreshPanel(); showDialog(); showShop(); showCombat();
 }
 function doAct(it: Intent): void {
-  if (!started) return;
+  if (!started || !link) return;
+  link.send(it);
+}
+
+// ---------- updates from the game (loopback or server) ----------
+let link: Link | null = null;
+type Summary = { step: number; inv: number; dialog?: string; combat: boolean; turn?: number; hp: number; shop: World['shop']; picis: number; monsoon: string; player: Vec; lawak: Vec };
+const summarise = (w: World): Summary => ({
+  step: w.step, inv: w.inv.length, dialog: w.dialog?.node, combat: !!w.combat, turn: w.combat?.turn, hp: w.player.hp, shop: w.shop, picis: w.picis,
+  monsoon: monsoonAt(w.tick), player: { x: w.player.x, y: w.player.y }, lawak: { x: w.lawak.x, y: w.lawak.y }
+});
+// What the world looked like after the previous update. The loopback mutates the world in place,
+// so "before" has to be remembered rather than read off the old object.
+let last: Summary = summarise(world);
+function remember(): void {
+  last = summarise(world);
   if (world.combat) for (const u of world.combat.units) prevUnitPos.set(u.id, { x: u.x, y: u.y });
-  applyEvents(act(world, it));
-  afterChange();
+}
+function receive(u: Update): void {
+  const before = last;
+  world = u.world; view.w = world;
+  if (u.kind !== 'tick') { applyEvents(u.ev); afterChange(); remember(); return; }
+  if (link?.online) lastTickAt = performance.now();
+  view.playerFrom = before.player; view.lawakFrom = before.lawak;
+  view.othersFrom = new Map(view.others.map(o => [o.id, { x: o.x, y: o.y }]));
+  view.others = u.others;
+  // a dodge window closes when its tick arrives
+  if (view.combatUi.ring?.kind === 'dodge') view.combatUi.ring = null;
+  applyEvents(u.ev);
+  if (monsoonAt(world.tick) !== before.monsoon) { audio.setRain(monsoonAt(world.tick) === 'NE' ? 0.6 : 0); showShop(); }
+  if (world.tick % 10 === 0) writeSave();
+  const now = summarise(world);
+  const changed = (['step', 'inv', 'dialog', 'combat', 'turn', 'hp', 'shop', 'picis'] as const).some(k => before[k] !== now[k]) || u.ev.some(e => e.t === 'combat');
+  if (changed) afterChange(); else refreshTop();
+  remember();
+}
+function playOffline(): void {
+  view.others = []; view.othersFrom.clear();
+  link = new LoopbackLink(world, receive);
+  lastTickAt = performance.now();
 }
 
 // ---------- input ----------
@@ -477,11 +516,42 @@ optSound.checked = opts.sound; optAuto.checked = opts.autoTime;
 optSound.addEventListener('change', () => { opts.sound = optSound.checked; saveOpts(); });
 optAuto.addEventListener('change', () => { opts.autoTime = optAuto.checked; saveOpts(); });
 if (readSave()) $('continue').hidden = false;
+let connecting = false;
 function begin(fresh: boolean): void {
+  if (started || connecting) return;
   audio.unlock();
   audio.setMuted(!opts.sound);
   $('mute').textContent = opts.sound ? '♪' : '✕';
-  if (fresh) { world = newWorld(Math.floor(Math.random() * 1e9)); view.w = world; }
+  const url = serverUrl(location);
+  if (!url) {
+    if (fresh) world = newWorld(Math.floor(Math.random() * 1e9));
+    playOffline();
+    enter(fresh);
+    return;
+  }
+  connecting = true;
+  const btn = $(fresh ? 'start' : 'continue'), label = btn.textContent;
+  btn.textContent = 'Connecting…';
+  SocketLink.connect(url, fresh ? {} : { save: save(world) }, receive).then(({ link: sl, welcome }) => {
+    link = sl;
+    sl.onLost = () => {
+      log('Lost the game server. Playing on offline from here.', 'warn');
+      playOffline();
+    };
+    world = welcome.world;
+    view.others = welcome.others;
+    enter(fresh);
+    log('Connected to the game server.', 'info');
+  }, () => {
+    if (fresh) world = newWorld(Math.floor(Math.random() * 1e9));
+    playOffline();
+    enter(fresh);
+    log('No game server found, so this game runs offline in your browser.', 'warn');
+  }).finally(() => { connecting = false; btn.textContent = label; });
+}
+function enter(fresh: boolean): void {
+  view.w = world;
+  remember();
   view.playerFrom = { x: world.player.x, y: world.player.y }; view.lawakFrom = { x: world.lawak.x, y: world.lawak.y };
   started = true;
   lastTickAt = performance.now();
@@ -503,24 +573,15 @@ function frame(now: number): void {
   view.t += dt;
   portraitT += dt;
   if (started) {
-    let guard = 0;
-    while (now - lastTickAt >= TICK_MS && guard++ < (world.combat ? 1 : 5)) {
-      lastTickAt += TICK_MS;
-      view.playerFrom = { x: world.player.x, y: world.player.y };
-      view.lawakFrom = { x: world.lawak.x, y: world.lawak.y };
-      if (world.combat) for (const u of world.combat.units) prevUnitPos.set(u.id, { x: u.x, y: u.y });
-      // a dodge window closes when its tick arrives
-      if (view.combatUi.ring?.kind === 'dodge') view.combatUi.ring = null;
-      const before = { step: world.step, inv: world.inv.length, dialog: world.dialog?.node, combat: !!world.combat, turn: world.combat?.turn, hp: world.player.hp, shop: world.shop, picis: world.picis };
-      const m0 = monsoonAt(world.tick);
-      const evs = step(world, []);
-      applyEvents(evs);
-      if (monsoonAt(world.tick) !== m0) { audio.setRain(monsoonAt(world.tick) === 'NE' ? 0.6 : 0); showShop(); }
-      if (world.tick % 10 === 0) writeSave();
-      const changed = before.step !== world.step || before.inv !== world.inv.length || before.dialog !== world.dialog?.node || before.combat !== !!world.combat || before.turn !== world.combat?.turn || before.hp !== world.player.hp || before.shop !== world.shop || before.picis !== world.picis || evs.some(e => e.t === 'combat');
-      if (changed) afterChange(); else refreshTop();
+    // Offline, this tab owns the clock; online, ticks arrive from the server (see receive()).
+    if (link instanceof LoopbackLink) {
+      let guard = 0;
+      while (now - lastTickAt >= TICK_MS && guard++ < (world.combat ? 1 : 5)) {
+        lastTickAt += TICK_MS;
+        link.tick();
+      }
+      if (now - lastTickAt > TICK_MS * 5) lastTickAt = now;
     }
-    if (now - lastTickAt > TICK_MS * 5) lastTickAt = now;
     view.alpha = Math.max(0, Math.min(1, (now - lastTickAt) / TICK_MS));
     // attack ring times out on its own: no press means a normal hit
     const r = view.combatUi.ring;
@@ -539,6 +600,9 @@ requestAnimationFrame(frame);
 // Exposed for the smoke test and for poking at the game from the console.
 (window as unknown as { __game: unknown }).__game = {
   get world() { return world; },
+  get online() { return !!link?.online; },
+  /** Other players in view (online only). */
+  get others() { return view.others; },
   act: (it: Intent) => doAct(it),
   begin,
   /** Client pixel position of a tile's centre, for scripted clicks. */

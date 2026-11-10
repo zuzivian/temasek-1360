@@ -39,50 +39,62 @@ function combatIntent(w: World, grade: Grade, dodge: Grade): Intent | null {
   return { t: 'combat', it: { t: 'end' } };
 }
 
+/** What the bot remembers between ticks. */
+export type BotMind = { sold: boolean };
+
+/** The bot's intents for the current state (at most one). Shared by the local and the over-the-server runs. */
+export function decide(w: World, mind: BotMind, opts: BotOpts = {}): Intent[] {
+  const grade = opts.grade ?? 'none', dodge = opts.dodge ?? 'none', jamuStock = opts.jamuStock ?? 3;
+  const intents: Intent[] = [];
+  if (w.combat) {
+    const it = combatIntent(w, grade, dodge);
+    if (it) intents.push(it);
+  } else if (w.dialog) {
+    intents.push({ t: 'say', option: 0 });
+  } else if (w.shop) {
+    const fish = w.inv.findIndex(s => s.id !== 'jamu' && s.id !== 'gong');
+    if (fish >= 0) intents.push({ t: 'sell', slot: fish });
+    else if (w.shop === 'rahmah' && count(w, 'jamu') < jamuStock && w.picis >= 8) intents.push({ t: 'buy', item: 'jamu' });
+    else { intents.push({ t: 'close' }); mind.sold = true; }
+  } else if (!w.player.path.length && !w.player.task) {
+    switch (w.step) {
+      case 0: intents.push({ t: 'talk', npc: 'lawak' }); break;
+      case 1: intents.push({ t: 'fish', spot: 0 }); break;
+      case 2: intents.push({ t: 'talk', npc: 'rahmah' }); break;
+      case 3:
+        // Fish a little more and stock up on jamu before asking for trouble.
+        if (!mind.sold || (count(w, 'jamu') < jamuStock && w.inv.length < 8)) {
+          if (w.inv.length >= 8) { mind.sold = false; intents.push({ t: 'talk', npc: 'rahmah' }); }
+          else intents.push({ t: 'fish', spot: 1 });
+        } else intents.push({ t: 'talk', npc: 'penghulu' });
+        break;
+      case 4: intents.push({ t: 'walk', to: ENCOUNTERS[0].center }); break;
+      case 5: intents.push({ t: 'walk', to: ENCOUNTERS[1].center }); break;
+      case 6: intents.push({ t: 'talk', npc: 'penghulu' }); break;
+      default: break;
+    }
+  } else if (w.player.task?.t === 'fish' && w.step === 3 && w.inv.length >= 8) {
+    intents.push({ t: 'talk', npc: 'rahmah' }); mind.sold = false;
+  }
+  return intents;
+}
+
+export const act1Done = (w: World): boolean => w.step >= 7 && !w.dialog;
+
 export function playAct1(opts: BotOpts = {}): BotResult {
   const w = newWorld(opts.seed ?? 1360);
-  const grade = opts.grade ?? 'none', dodge = opts.dodge ?? 'none';
-  const maxTicks = opts.maxTicks ?? 20000, jamuStock = opts.jamuStock ?? 3;
+  const maxTicks = opts.maxTicks ?? 20000;
   const fights: BotResult['fights'] = [];
-  let fightStart = 0, sold = false;
+  const mind: BotMind = { sold: false };
+  let fightStart = 0;
   for (let t = 0; t < maxTicks; t++) {
-    const intents: Intent[] = [];
-    if (w.combat) {
-      const it = combatIntent(w, grade, dodge);
-      if (it) intents.push(it);
-    } else if (w.dialog) {
-      intents.push({ t: 'say', option: 0 });
-    } else if (w.shop) {
-      const fish = w.inv.findIndex(s => s.id !== 'jamu' && s.id !== 'gong');
-      if (fish >= 0) intents.push({ t: 'sell', slot: fish });
-      else if (w.shop === 'rahmah' && count(w, 'jamu') < jamuStock && w.picis >= 8) intents.push({ t: 'buy', item: 'jamu' });
-      else { intents.push({ t: 'close' }); sold = true; }
-    } else if (!w.player.path.length && !w.player.task) {
-      switch (w.step) {
-        case 0: intents.push({ t: 'talk', npc: 'lawak' }); break;
-        case 1: intents.push({ t: 'fish', spot: 0 }); break;
-        case 2: intents.push({ t: 'talk', npc: 'rahmah' }); break;
-        case 3:
-          // Fish a little more and stock up on jamu before asking for trouble.
-          if (!sold || (count(w, 'jamu') < jamuStock && w.inv.length < 8)) {
-            if (w.inv.length >= 8) { sold = false; intents.push({ t: 'talk', npc: 'rahmah' }); }
-            else intents.push({ t: 'fish', spot: 1 });
-          } else intents.push({ t: 'talk', npc: 'penghulu' });
-          break;
-        case 4: intents.push({ t: 'walk', to: ENCOUNTERS[0].center }); break;
-        case 5: intents.push({ t: 'walk', to: ENCOUNTERS[1].center }); break;
-        case 6: intents.push({ t: 'talk', npc: 'penghulu' }); break;
-        default: break;
-      }
-    } else if (w.player.task?.t === 'fish' && w.step === 3 && w.inv.length >= 8) {
-      intents.push({ t: 'talk', npc: 'rahmah' }); sold = false;
-    }
+    const intents = decide(w, mind, opts);
     const wasFighting = !!w.combat;
     const enc = w.combat?.enc;
     const ev = step(w, intents);
     if (!wasFighting && w.combat) fightStart = w.tick;
     for (const e of ev) if (e.t === 'combatEnd') fights.push({ enc: enc ?? '?', won: e.won, ticks: w.tick - fightStart });
-    if (w.step >= 7 && !w.dialog) return { world: w, ticks: w.tick, fights, finished: true };
+    if (act1Done(w)) return { world: w, ticks: w.tick, fights, finished: true };
   }
   return { world: w, ticks: w.tick, fights, finished: false };
 }
