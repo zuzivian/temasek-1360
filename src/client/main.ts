@@ -41,6 +41,7 @@ let started = false;
 const view: View = {
   w: world, t: 0, alpha: 1,
   playerFrom: { x: world.player.x, y: world.player.y }, lawakFrom: { x: world.lawak.x, y: world.lawak.y },
+  others: [], othersFrom: new Map(),
   unitAnims: new Map(), hover: null, clickMark: null, floaters: [], shots: [],
   combatUi: { ability: null, hoverUnit: null, ring: null }, flashes: new Map(),
   zoom: Math.max(0.8, Math.min(1.5, window.innerHeight / 760))
@@ -361,6 +362,8 @@ function receive(u: Update): void {
   if (u.kind !== 'tick') { applyEvents(u.ev); afterChange(); remember(); return; }
   if (link?.online) lastTickAt = performance.now();
   view.playerFrom = before.player; view.lawakFrom = before.lawak;
+  view.othersFrom = new Map(view.others.map(o => [o.id, { x: o.x, y: o.y }]));
+  view.others = u.others;
   // a dodge window closes when its tick arrives
   if (view.combatUi.ring?.kind === 'dodge') view.combatUi.ring = null;
   applyEvents(u.ev);
@@ -372,6 +375,7 @@ function receive(u: Update): void {
   remember();
 }
 function playOffline(): void {
+  view.others = []; view.othersFrom.clear();
   link = new LoopbackLink(world, receive);
   lastTickAt = performance.now();
 }
@@ -514,6 +518,7 @@ function begin(fresh: boolean): void {
       playOffline();
     };
     world = welcome.world;
+    view.others = welcome.others;
     enter(fresh);
     log('Connected to the game server.', 'info');
   }, () => {
@@ -575,6 +580,8 @@ requestAnimationFrame(frame);
 (window as unknown as { __game: unknown }).__game = {
   get world() { return world; },
   get online() { return !!link?.online; },
+  /** Other players in view (online only). */
+  get others() { return view.others; },
   act: (it: Intent) => doAct(it),
   begin,
   /** Client pixel position of a tile's centre, for scripted clicks. */

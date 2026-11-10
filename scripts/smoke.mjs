@@ -121,6 +121,20 @@ try {
     const met = await on.evaluate(() => ({ met: !!window.__game.world.flags.met_lawak, step: window.__game.world.step }));
     if (!met.met || met.step < 1) errors.push(`online: the Pak Lawak conversation did not finish (${JSON.stringify(met)})`);
     await on.screenshot({ path: 'smoke/9-online.png' });
+    // A second player joins the same realm: each page should see the other on the beach.
+    const on2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    on2.on('pageerror', e => errors.push(`second player pageerror: ${e.message}`));
+    await on2.goto(`http://localhost:${onlinePort}/?server`);
+    await on2.click('#start');
+    await on2.waitForFunction(() => window.__game.online, null, { timeout: 5000 });
+    await on2.evaluate(() => window.__game.act({ t: 'walk', to: { x: 12, y: 27 } }));
+    try {
+      await on.waitForFunction(() => window.__game.others.length === 1, null, { timeout: 5000 });
+      await on2.waitForFunction(() => window.__game.others.length === 1, null, { timeout: 5000 });
+    } catch { errors.push(`online: the two players did not see each other (${await on.evaluate(() => window.__game.others.length)}, ${await on2.evaluate(() => window.__game.others.length)})`); }
+    await on.waitForTimeout(1500);
+    await on.screenshot({ path: 'smoke/10-two-players.png' });
+    await on2.close();
     gameServer.kill();
     await on.waitForFunction(() => !window.__game.online, null, { timeout: 5000 });
     const t2 = await on.evaluate(() => window.__game.world.tick);

@@ -1,4 +1,5 @@
 // Canvas renderer: isometric tiles, painted objects, puppets, fog, weather and combat overlays.
+import type { Avatar } from '../net/protocol.ts';
 import { ABILITIES, ENCOUNTERS, MONSOON_WIND, NPCS, type AbilityId, type Look, type NpcId } from '../sim/content.ts';
 import { inBox, reachable, canUse, current, maxRange, type CombatState, type Unit } from '../sim/combat.ts';
 import type { Element, Vec } from '../sim/core.ts';
@@ -34,6 +35,8 @@ export type View = {
   t: number;
   alpha: number;
   playerFrom: Vec; lawakFrom: Vec;
+  /** Other players in view (online only), and where each stood on the previous tick. */
+  others: Avatar[]; othersFrom: Map<number, Vec>;
   unitAnims: Map<string, Anim>;
   hover: Vec | null;
   clickMark: { x: number; y: number; at: number; ok: boolean } | null;
@@ -395,6 +398,18 @@ export function render(ctx: CanvasRenderingContext2D, v: View, width: number, he
         drawPuppet(ctx, 'hero', ex, ey - 4 - bob(v, pRender), S, w.player.facing, t);
       }
     });
+    // Other players nearby. Each fights in their own arena, so someone mid-fight shows faded.
+    for (const o of v.others) {
+      const op = lerpV(v.othersFrom.get(o.id) ?? o, o, v.alpha);
+      const [ox, oy] = iso(op.x, op.y, elevAt(MAP, Math.round(op.x), Math.round(op.y)));
+      list.push({
+        depth: op.x + op.y + 0.55, draw: () => {
+          if (o.fishing !== undefined) drawLine(ctx, ox, oy, o.fishing, t, o.facing);
+          drawPuppet(ctx, 'hero', ox, oy - 4 - bob(v, op), S, o.facing, t, { phase: o.id, alpha: o.fighting ? 0.45 : 0.9 });
+          playerTag(ctx, ox, oy - 92, `Pemain ${o.id}${o.fighting ? ' · bertarung' : ''}`);
+        }
+      });
+    }
   } else {
     for (const u of c.units) {
       const up = unitPos(v, u), [ux, uy] = iso(up.x, up.y);
@@ -454,6 +469,13 @@ function bob(v: View, p: Vec): number {
   return moving ? Math.abs(Math.sin(v.t * 14)) * 3 : 0;
 }
 
+function playerTag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string): void {
+  ctx.save();
+  ctx.font = '600 11px "IBM Plex Sans", system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.65)'; ctx.strokeText(text, x, y);
+  ctx.fillStyle = '#f3e6c4'; ctx.fillText(text, x, y);
+  ctx.restore();
+}
 function drawLine(ctx: CanvasRenderingContext2D, x: number, y: number, spot: number, t: number, f: 1 | -1): void {
   void spot;
   const tipX = x + f * 40, tipY = y - 66, bx = x + f * 54, by = y + 6 + Math.sin(t * 2.6) * 1.5;
