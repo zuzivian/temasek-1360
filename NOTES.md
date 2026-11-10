@@ -4,7 +4,8 @@
 
 - Task: run `src/sim` behind a WebSocket server (600 ms tick, intents in, state out); keep offline play via an in-process loopback.
 - Done: `src/net/protocol.ts` (wire format + intent validation), `src/net/host.ts` (GameHost: submit/tick/replay), `tests/net.test.ts`.
-- Next: zero-dependency WebSocket server in `server/`, server tests, then client `Link` (loopback + socket) in `src/client/net.ts`.
+- Done: `server/ws.ts` (hand-rolled RFC 6455, no deps), `server/game-server.ts` (shared 600 ms clock, one GameHost per connection), `server/main.ts`, `tests/server.test.ts`.
+- Next: client `Link` (loopback + socket) in `src/client/net.ts`, wire into `src/client/main.ts`, smoke test online mode.
 
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
