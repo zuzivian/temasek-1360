@@ -167,7 +167,7 @@ function harness() {
   let timers: { at: number; fn: () => void; id: number }[] = [], nextId = 1;
   const fetchFn: LiveOpts['fetch'] = async (url, init) => {
     const req = new Request(`http://localhost${url}`, { method: init?.method ?? 'GET', body: init?.body });
-    const res = init?.method === 'POST' ? await api.POST(req) : api.GET();
+    const res = await api.default(req);
     // The handler stamps Date.now(); report it on our fake clock instead so offsets are testable.
     const body = await res.json() as PresenceRes;
     return { ok: res.ok, status: res.status, json: async () => ({ ...body, now: t.now }) };

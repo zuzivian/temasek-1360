@@ -16,9 +16,7 @@ async function callApi(req, res) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const request = new Request(`http://localhost${req.url}`, { method: req.method, headers: { 'content-type': req.headers['content-type'] ?? '' }, body: req.method === 'POST' ? Buffer.concat(chunks) : undefined });
-  const handler = req.method === 'POST' ? api.POST : req.method === 'GET' ? api.GET : null;
-  if (!handler) { res.writeHead(405).end(); return; }
-  const out = await handler(request);
+  const out = await api.default(request);
   res.writeHead(out.status, Object.fromEntries(out.headers)).end(await out.text());
 }
 

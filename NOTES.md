@@ -28,7 +28,8 @@ light, free tier, cost only while people are actually playing, no VM ticking aro
   with the Act 1 bot starting at a realm tick.
 - **Rules still run in the tab** (`LiveLink` wraps a `GameHost`, like the loopback), ticked up to the realm tick each
   frame (one tick per frame in a fight, as before). Back from a long-hidden tab it jumps instead of replaying.
-- **Presence is the only shared state.** `api/world.ts` → `src/net/presence.ts`. A visible, active tab POSTs its pose
+- **Presence is the only shared state.** `api/world.ts` (Edge runtime, so Vercel bundles it and its `src/` imports into
+  one file with esbuild; no question of how `.ts` import paths resolve at runtime) → `src/net/presence.ts`. A visible, active tab POSTs its pose
   (position, facing, the next ≤8 path tiles, fishing/fighting) every **5 s alone / 2 s with someone in view**, and
   gets back the players within `SEE_RADIUS` (keeps them to `FORGET_RADIUS`, as the WebSocket realm does). Others'
   walks are played forward on the shared clock between posts, so they don't jump.
@@ -67,6 +68,8 @@ monsoon name and countdown (±1 s), a hidden page leaves and stops posting, a lo
 - The node WebSocket server (`server/`) still keeps per-World clocks; it could adopt `realmTick` too.
 - Clock skew: a phone whose clock is minutes off is corrected by the server time on the first request; if that request
   fails the tab plays offline on its own clock.
+- **Not verified against the real preview from the sandbox** (its network policy blocks `*.vercel.app` and npm), only
+  that Vercel builds it. Locally the same handler runs under `serve.mjs`, the tests and smoke.
 - Headless Chromium drops a beacon when its whole context closes, so smoke tests hiding, not closing.
 
 ## Done (10 Nov 2026): networking roadmap step 2, first slice (branch `autopilot/temasek-1360-server-2`)
