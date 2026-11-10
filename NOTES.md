@@ -1,14 +1,28 @@
 # NOTES: Temasek 1360 MVP
 
-## Autopilot in progress (networking step 1, branch `autopilot/temasek-1360-server`)
-
-- Task: run `src/sim` behind a WebSocket server (600 ms tick, intents in, state out); keep offline play via an in-process loopback.
-- Done: `src/net/protocol.ts` (wire format + intent validation), `src/net/host.ts` (GameHost: submit/tick/replay), `tests/net.test.ts`.
-- Done: `server/ws.ts` (hand-rolled RFC 6455, no deps), `server/game-server.ts` (shared 600 ms clock, one GameHost per connection), `server/main.ts`, `tests/server.test.ts`.
-- Next: client `Link` (loopback + socket) in `src/client/net.ts`, wire into `src/client/main.ts`, smoke test online mode.
-
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
+
+## Done (10 Nov 2026): networking roadmap step 1 (branch `autopilot/temasek-1360-server`)
+
+- **`src/net/host.ts`, `GameHost`:** owns one player's World. `submit(intent)` applies it at once through `act()`, and
+  `tick()` runs `step()`. It has no timers; the driver decides when ticks happen. With `record: true` it logs
+  everything, and `replay()` rebuilds the identical world (tested). Max 30 intents per tick.
+- **`src/net/protocol.ts`:** the wire format (`hello`, `intent` → `state` with `welcome`/`act`/`tick`, `error`) and
+  `parseIntent()`, which validates every field against the content tables (rejects `__proto__` and the like).
+- **`server/`:** `node server/main.ts [port]` serves the page and `/ws` on 127.0.0.1 and ticks every session on one
+  600 ms clock. `ws.ts` is a small hand-written RFC 6455 endpoint (text, fragments, ping, close, 256 KB cap,
+  Origin check: same host or localhost only), so the repo still has zero dependencies and CI needed no change.
+- **Client:** `src/client/net.ts` has a `Link` with two implementations. `LoopbackLink` runs a `GameHost` in the tab,
+  ticked by the frame loop, so offline play behaves exactly as before, including pausing in a hidden tab.
+  `SocketLink` is used when the URL has `?server`. `main.ts` no longer calls `step()`/`act()`; it sends intents and
+  redraws from `receive()`. If the server can't be reached it starts offline; if it drops mid-game it carries on
+  offline from the last state.
+- **Tests:** `tests/net.test.ts` and `tests/server.test.ts` (25 in total now). They cover tick pacing and order,
+  intents matching a local replay, bad input and floods, independent sessions, frame parsing, the RFC handshake
+  key, and the Act 1 bot finishing the act **only over the socket** (about 1 s at a 3 ms tick).
+  `scripts/smoke.mjs` now also plays through the real server in Chromium, then kills the server and checks the
+  page carries on offline with progress kept.
 
 ## Done (31 Oct 2026)
 
@@ -70,8 +84,8 @@ A code review found 7 issues, all fixed:
 2. **Decide the tentative calls** in `docs/DESIGN.md`, especially who the player is, and the
    pirate lords.
 3. **Networking roadmap:**
-   1. move `src/sim` behind a WebSocket server that runs `step()` every 600 ms and accepts
-      intents
+   1. ~~move `src/sim` behind a WebSocket server that runs `step()` every 600 ms and accepts
+      intents~~ done on `autopilot/temasek-1360-server` (10 Nov). Still single-player worlds, one per connection.
    2. send each client only what's near it
    3. Postgres saves and login
    4. atomic trades (the item-duplication lesson)
@@ -82,6 +96,14 @@ A code review found 7 issues, all fixed:
    prototypes. Consider giving the game its own repo, as Derby Day and Ring Studio got.
 
 ## Gotchas
+
+- **Server trust is step-1 level.** The server trusts the save the client sends in `hello` (no accounts until
+  step 3) and the timing grade in combat intents. Every state message carries the whole World (about 10 KB), which
+  is fine on localhost; trimming it is step 2.
+- **Online dodge windows include latency.** The client opens the dodge ring when the windup tick *arrives* and
+  closes it at the next one. The intent must reach the server before its next tick, so a slow link shortens the
+  window. Not noticeable on localhost; not measured over a real network.
+- **`server/node-shim.d.ts`** declares only the Node APIs the server uses. Add to it if you use more.
 
 - **No npm network in the cloud sandbox.** The repo has zero dependencies on purpose:
   - `tsc` (global, 6.0.2) builds

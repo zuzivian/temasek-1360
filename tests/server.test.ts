@@ -128,3 +128,27 @@ test('ws: frames, handshake key and origin rules', () => {
   assert.ok(!originAllowed('https://evil.example', 'localhost:8080'));
   assert.ok(!originAllowed('not a url', 'localhost:8080'));
 });
+
+test('server: the Act 1 bot finishes the act playing only through the socket', async () => {
+  const { decide, act1Done } = await import('./bot.ts');
+  const srv = await startGameServer({ tickMs: 3 });
+  try {
+    const c = await connect(srv.port);
+    c.send({ t: 'hello', v: PROTOCOL, seed: 4 });
+    const mind = { sold: false };
+    let inflight = 0, w: World | null = null, fights = 0;
+    for (let n = 0; n < 40000; n++) {
+      const m = stateOf(await c.next(5000));
+      if (m.kind === 'act') inflight--;
+      if (m.ev.some(e => e.t === 'combatEnd')) fights++;
+      w = m.world;
+      if (act1Done(w)) break;
+      // Like a real client: act on fresh state only, never on a tick that crossed our own intent.
+      if (inflight > 0) continue;
+      for (const it of decide(w, mind)) { c.send({ t: 'intent', it }); inflight++; }
+    }
+    assert.ok(w && act1Done(w), `finished Act 1 over the socket (step ${w?.step}, tick ${w?.tick})`);
+    assert.ok(fights >= 2, 'fought the patrol and Si Todak');
+    c.ws.close();
+  } finally { await srv.close(); }
+});

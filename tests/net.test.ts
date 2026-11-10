@@ -69,3 +69,20 @@ test('protocol: client messages', () => {
   assert.equal(parseClientMsg('{not json'), null);
   assert.equal(parseClientMsg('"hello"'), null);
 });
+
+test('client link: loopback hands back the same world object; server URLs come from ?server', async () => {
+  const { LoopbackLink, serverUrl } = await import('../src/client/net.ts');
+  const w = newWorld(8);
+  const seen: string[] = [];
+  const link = new LoopbackLink(w, u => { assert.equal(u.world, w, 'offline play mutates one world in place'); seen.push(u.kind); });
+  link.send({ t: 'talk', npc: 'lawak' });
+  link.tick();
+  assert.deepEqual(seen, ['act', 'tick']);
+  assert.equal(w.tick, 1);
+  const loc = (search: string, protocol = 'http:') => ({ search, host: 'localhost:8080', protocol });
+  assert.equal(serverUrl(loc('')), null, 'no parameter: offline');
+  assert.equal(serverUrl(loc('?server')), 'ws://localhost:8080/ws');
+  assert.equal(serverUrl(loc('?server', 'https:')), 'wss://localhost:8080/ws');
+  assert.equal(serverUrl(loc('?server=127.0.0.1:9000')), 'ws://127.0.0.1:9000/ws');
+  assert.equal(serverUrl(loc('?server=ws://box:1/ws')), 'ws://box:1/ws');
+});
