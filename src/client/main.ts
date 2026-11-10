@@ -9,6 +9,7 @@ import { count, load, maxHp, monsoonAt, monsoonLeft, newWorld, save, shopPrice, 
 import type { Update } from '../net/protocol.ts';
 import * as audio from './audio.ts';
 import { LoopbackLink, SocketLink, serverUrl, type Link } from './net.ts';
+import { keyAction } from './keys.ts';
 import { drawPortrait } from './puppets.ts';
 import { EH, EL_COLOR, iso, render, screenToTile, type HitBox, type View } from './render.ts';
 
@@ -485,23 +486,20 @@ addEventListener('keydown', ev => {
   if (!started) return;
   audio.unlock();
   const c = world.combat;
-  // A focused button owns Enter and Space, so keyboard players can press it (Enter on an ability
-  // button used to also end the turn). Space still belongs to a timing ring or an open dialogue,
-  // so mashing Space through a conversation never picks an answer by accident.
   const onButton = ev.target instanceof HTMLButtonElement || ev.target instanceof HTMLInputElement;
-  const continueLine = !!world.dialog && !DIALOG[world.dialog.node].options?.length;
-  if (ev.code === 'Space') {
-    if (onButton && !view.combatUi.ring && !world.dialog) return;
-    ev.preventDefault();
-    if (view.combatUi.ring) { pressTiming(); return; }
-    if (continueLine) doAct({ t: 'say', option: 0 });
-    return;
+  const act = keyAction({
+    key: ev.key, code: ev.code, onButton, inCombat: !!c, myTurn: !!c && current(c).id === 'you', ring: !!view.combatUi.ring,
+    dialog: !!world.dialog, continueLine: !!world.dialog && !DIALOG[world.dialog.node].options?.length
+  });
+  if (ev.code === 'Space' && !(onButton && !view.combatUi.ring && !world.dialog)) ev.preventDefault();
+  switch (act.t) {
+    case 'timing': pressTiming(); break;
+    case 'say': doAct({ t: 'say', option: act.option }); break;
+    case 'close': doAct({ t: 'close' }); break;
+    case 'cancelAbility': view.combatUi.ability = null; showCombat(); break;
+    case 'endTurn': view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } }); break;
+    case 'ability': { const id = unitById(c!, 'you')!.abilities[act.n - 1]; if (id) pickAbility(id); break; }
   }
-  if (onButton && ev.key === 'Enter') return;
-  if (ev.key === 'Escape') { if (c) { view.combatUi.ability = null; showCombat(); } else doAct({ t: 'close' }); return; }
-  if (c && (ev.key === 'e' || ev.key === 'E' || ev.key === 'Enter') && current(c).id === 'you' && !view.combatUi.ring) { view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } }); return; }
-  if (c && /^[1-9]$/.test(ev.key)) { const you = unitById(c, 'you')!; const id = you.abilities[Number(ev.key) - 1]; if (id) pickAbility(id); return; }
-  if (world.dialog && /^[1-9]$/.test(ev.key)) doAct({ t: 'say', option: Number(ev.key) - 1 });
 });
 
 $('mute').addEventListener('click', () => {
