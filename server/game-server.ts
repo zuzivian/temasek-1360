@@ -59,7 +59,9 @@ export function startGameServer(opts: ServerOpts = {}): Promise<GameServer> {
     if (!s.host) { send(s, { t: 'error', msg: 'send hello first' }); return; }
     let ev: Ev[] | null;
     try { ev = s.host.submit(msg.it); } catch (e) { fail(s, e); return; }
+    // Every intent gets an answer, so a client waiting on one never hangs.
     if (ev) state(s, 'act', s.host.world, ev);
+    else send(s, { t: 'error', msg: 'too many intents' });
   }
 
   function fail(s: Session, e: unknown): void {

@@ -4,7 +4,8 @@
 // client → server:  hello (once), then intent messages
 // server → client:  state messages: 'welcome' after hello, 'act' after each applied intent,
 //                   'tick' after each 0.6 s step. Each carries the whole World for now; sending
-//                   only what is near the player is roadmap step 2.
+//                   only what is near the player is roadmap step 2. Every intent is answered
+//                   by an 'act' state or an error (bad message, too many intents this tick).
 import { ABILITIES, GEAR, ITEMS, NPCS } from '../sim/content.ts';
 import type { Ev, Intent, World } from '../sim/world.ts';
 

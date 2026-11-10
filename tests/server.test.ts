@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startGameServer } from '../server/game-server.ts';
 import { acceptKey, frame, originAllowed, parseFrame } from '../server/ws.ts';
+import { MAX_INTENTS_PER_TICK } from '../src/net/host.ts';
 import { PROTOCOL, WS_PATH, type ServerMsg } from '../src/net/protocol.ts';
 import { newWorld, save, step, type World } from '../src/sim/world.ts';
 
@@ -67,7 +68,7 @@ test('server: intents apply at once and match the same game run locally', async 
 });
 
 test('server: bad messages get an error and the session survives; floods get disconnected', async () => {
-  const srv = await startGameServer({ tickMs: 1000 });
+  const srv = await startGameServer({ tickMs: 60000 });
   try {
     const c = await connect(srv.port);
     c.send({ t: 'intent', it: { t: 'close' } });
@@ -81,6 +82,11 @@ test('server: bad messages get an error and the session survives; floods get dis
     assert.deepEqual(await c.next(), { t: 'error', msg: 'bad message' });
     c.send({ t: 'intent', it: { t: 'close' } });
     assert.equal(stateOf(await c.next()).kind, 'act', 'still playing after bad input');
+    // Intents over the per-tick budget are answered with an error, never silently dropped.
+    for (let i = 0; i < MAX_INTENTS_PER_TICK + 3; i++) c.send({ t: 'intent', it: { t: 'close' } });
+    const replies: string[] = [];
+    for (let i = 0; i < MAX_INTENTS_PER_TICK + 3; i++) { const m = await c.next(); replies.push(m.t === 'state' ? m.kind : m.msg); }
+    assert.deepEqual(replies, [...Array(MAX_INTENTS_PER_TICK - 1).fill('act'), ...Array(4).fill('too many intents')]);
     for (let i = 0; i < 30; i++) c.send('x');
     assert.equal(await c.closed, 1008, 'too many bad messages closes the socket with policy-violation');
   } finally { await srv.close(); }
@@ -136,15 +142,17 @@ test('server: the Act 1 bot finishes the act playing only through the socket', a
     const c = await connect(srv.port);
     c.send({ t: 'hello', v: PROTOCOL, seed: 4 });
     const mind = { sold: false };
-    let inflight = 0, w: World | null = null, fights = 0;
+    let inflight = 0, w: World | null = null, fights = 0, decidedAt = -1;
     for (let n = 0; n < 40000; n++) {
       const m = stateOf(await c.next(5000));
       if (m.kind === 'act') inflight--;
       if (m.ev.some(e => e.t === 'combatEnd')) fights++;
       w = m.world;
       if (act1Done(w)) break;
-      // Like a real client: act on fresh state only, never on a tick that crossed our own intent.
-      if (inflight > 0) continue;
+      // Like the local bot: at most one decision per tick, and only on state that already
+      // includes our last intent.
+      if (inflight > 0 || w.tick === decidedAt) continue;
+      decidedAt = w.tick;
       for (const it of decide(w, mind)) { c.send({ t: 'intent', it }); inflight++; }
     }
     assert.ok(w && act1Done(w), `finished Act 1 over the socket (step ${w?.step}, tick ${w?.tick})`);
