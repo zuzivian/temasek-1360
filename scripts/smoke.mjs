@@ -1,5 +1,6 @@
 // Browser smoke test: serves the repo, opens the game in headless Chromium, plays a few beats
-// through the real UI, fails on any page error, and saves screenshots to smoke/.
+// through the real UI, fails on any page error, and saves screenshots to smoke/. Then it plays
+// a short stretch through the game server (server/main.ts) and checks the offline fallback.
 // Usage: node scripts/smoke.mjs   (needs Playwright; set CHROMIUM=/path/to/chrome to override)
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -10,7 +11,7 @@ let chromium;
 for (const p of ['playwright', '/opt/node-tools/node_modules/playwright']) { try { ({ chromium } = require(p)); break; } catch { /* next */ } }
 if (!chromium) { console.error('Playwright not found'); process.exit(1); }
 
-const port = 8765;
+const port = 8765, onlinePort = 8766;
 const server = spawn(process.execPath, ['scripts/serve.mjs', String(port)], { stdio: 'ignore' });
 await new Promise(r => setTimeout(r, 400));
 mkdirSync('smoke', { recursive: true });
@@ -63,8 +64,16 @@ try {
     const dist = Math.abs(target.x - f.you.x) + Math.abs(target.y - f.you.y);
     if (dist > 4 || dist < 2) {
       const keys = await page.evaluate(() => window.__game.reach());
-      const pick = keys.map(k => k.split(',').map(Number)).sort((a, b) => Math.abs(Math.abs(a[0] - target.x) + Math.abs(a[1] - target.y) - 3) - Math.abs(Math.abs(b[0] - target.x) + Math.abs(b[1] - target.y) - 3))[0];
-      if (pick) { const p = await page.evaluate(([x, y]) => window.__game.toScreen(x, y), pick); await page.mouse.click(p.x, p.y); await page.waitForTimeout(1500); }
+      const picks = keys.map(k => k.split(',').map(Number)).sort((a, b) => Math.abs(Math.abs(a[0] - target.x) + Math.abs(a[1] - target.y) - 3) - Math.abs(Math.abs(b[0] - target.x) + Math.abs(b[1] - target.y) - 3));
+      // A puppet standing in front of a tile covers it on screen, so a click there picks the unit
+      // instead (this depends on the random seed). Try the next tile until the step lands.
+      for (const pick of picks.slice(0, 6)) {
+        const p = await page.evaluate(([x, y]) => window.__game.toScreen(x, y), pick);
+        await page.mouse.click(p.x, p.y);
+        await page.waitForTimeout(300);
+        const me = await page.evaluate(() => window.__game.world.combat?.units[0]);
+        if (!me || me.x !== f.you.x || me.y !== f.you.y) { await page.waitForTimeout(1200); break; }
+      }
     }
     f = await fight();
     const hpBefore = f.foes.reduce((n, o) => n + o.hp, 0);
@@ -87,6 +96,40 @@ try {
   const state = await page.evaluate(() => ({ step: window.__game.world.step, combat: !!window.__game.world.combat, hp: window.__game.world.player.hp, silat: window.__game.world.skills.silat }));
   console.log(JSON.stringify(state));
   if (!(state.silat > 0)) errors.push('no Silat XP from the fight');
+
+  // Online: the same page against the game server (server/main.ts), then the server goes away
+  // mid-game and the page must carry on offline.
+  const gameServer = spawn(process.execPath, ['server/main.ts', String(onlinePort)], { stdio: 'ignore' });
+  try {
+    await new Promise(r => setTimeout(r, 600));
+    const on = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    on.on('pageerror', e => errors.push(`online pageerror: ${e.message}`));
+    await on.goto(`http://localhost:${onlinePort}/?server`);
+    await on.click('#start');
+    await on.waitForFunction(() => window.__game.online, null, { timeout: 5000 });
+    const t0 = await on.evaluate(() => window.__game.world.tick);
+    await on.waitForTimeout(1500);
+    const t1 = await on.evaluate(() => window.__game.world.tick);
+    if (!(t1 - t0 >= 2 && t1 - t0 <= 4)) errors.push(`online: expected 2-4 server ticks in 1.5 s, got ${t1 - t0}`);
+    // Talk to Pak Lawak and page through with the real keyboard: every answer is an intent over the socket.
+    await on.evaluate(() => window.__game.act({ t: 'talk', npc: 'lawak' }));
+    await on.waitForFunction(() => window.__game.world.dialog, null, { timeout: 8000 });
+    for (let i = 0; i < 10 && await on.evaluate(() => !!window.__game.world.dialog); i++) {
+      await on.keyboard.press('Space'); await on.waitForTimeout(250);
+      if (await on.isVisible('#dopts button:not(.next)')) { await on.click('#dopts button:not(.next)'); await on.waitForTimeout(250); }
+    }
+    const met = await on.evaluate(() => ({ met: !!window.__game.world.flags.met_lawak, step: window.__game.world.step }));
+    if (!met.met || met.step < 1) errors.push(`online: the Pak Lawak conversation did not finish (${JSON.stringify(met)})`);
+    await on.screenshot({ path: 'smoke/9-online.png' });
+    gameServer.kill();
+    await on.waitForFunction(() => !window.__game.online, null, { timeout: 5000 });
+    const t2 = await on.evaluate(() => window.__game.world.tick);
+    await on.waitForTimeout(1300);
+    const t3 = await on.evaluate(() => window.__game.world.tick);
+    if (!(t3 > t2)) errors.push('online: the game stopped when the server went away');
+    if (!(await on.evaluate(() => window.__game.world.flags.met_lawak))) errors.push('online: progress was lost when falling back offline');
+    console.log(`online ok: ${t1 - t0} server ticks in 1.5 s, then offline from tick ${t2}`);
+  } finally { gameServer.kill(); }
 } catch (e) {
   errors.push(`script: ${e.message.split('\n')[0]}`);
 } finally {

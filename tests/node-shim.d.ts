@@ -11,4 +11,4 @@ declare module 'node:assert/strict' {
   };
   export default assert;
 }
-declare const process: { argv: string[]; exitCode?: number };
+declare const process: { argv: string[]; exitCode?: number; cwd(): string };
