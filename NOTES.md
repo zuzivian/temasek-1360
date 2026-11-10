@@ -3,6 +3,12 @@
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
 
+## Autopilot in progress (10 Nov 2026, branch `autopilot/temasek-1360-server-2`)
+
+Task: networking step 2, shared realm + interest radius + deltas.
+- Done: `src/net/delta.ts`, `realm.ts`, `sync.ts`; server uses one Realm; SocketLink uses a Mirror; tests.
+- Next: draw other players in the client, two-page smoke check, docs, PR.
+
 ## Done (10 Nov 2026): networking roadmap step 1 (branch `autopilot/temasek-1360-server`)
 
 - **`src/net/host.ts`, `GameHost`:** owns one player's World. `submit(intent)` applies it at once through `act()`, and

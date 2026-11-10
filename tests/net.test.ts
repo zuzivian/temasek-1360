@@ -86,3 +86,131 @@ test('client link: loopback hands back the same world object; server URLs come f
   assert.equal(serverUrl(loc('?server=127.0.0.1:9000')), 'ws://127.0.0.1:9000/ws');
   assert.equal(serverUrl(loc('?server=ws://box:1/ws')), 'ws://box:1/ws');
 });
+
+// ---------- step 2: shared realm, interest, deltas ----------
+import { applyPatch, diff } from '../src/net/delta.ts';
+import { FORGET_RADIUS, MAX_PLAYERS, Realm, SEE_RADIUS } from '../src/net/realm.ts';
+import { Mirror, Outbox } from '../src/net/sync.ts';
+import type { Intent, World } from '../src/sim/world.ts';
+
+const roundTrip = (a: unknown, b: unknown) => {
+  const p = diff(a, b);
+  const out = p ? applyPatch(structuredClone(a), JSON.parse(JSON.stringify(p))) : structuredClone(a);
+  assert.deepEqual(out, b, `${JSON.stringify(a)} -> ${JSON.stringify(b)} via ${JSON.stringify(p)}`);
+  return p;
+};
+
+test('delta: diff then applyPatch rebuilds the target, and equal values give no patch', () => {
+  assert.equal(diff({ a: 1, b: [1, 2] }, { a: 1, b: [1, 2] }), null);
+  assert.equal(diff(newWorld(3), newWorld(3)), null);
+  roundTrip({ a: 1 }, { a: 2 });
+  roundTrip({ a: 1, gone: true }, { a: 1 });
+  roundTrip({ a: 1 }, { a: 1, added: { deep: [1] } });
+  roundTrip({ a: null }, { a: { x: 1 } });
+  roundTrip({ a: { x: 1 } }, { a: null });
+  roundTrip({ p: [{ x: 1 }, { x: 2 }] }, { p: [{ x: 2 }] });
+  roundTrip({ p: [1, 2, 3] }, { p: 'str' });
+  roundTrip(Array(100).fill(0), Array(100).fill(0).map((v, i) => (i === 7 ? 1 : v)));
+  // Undefined-valued keys count as absent, as in JSON.
+  assert.equal(diff({ a: 1, c: undefined }, { a: 1 }), null);
+  roundTrip({ a: 1 }, { a: 1, c: 5 });
+  // Revealing a few fog tiles patches just those tiles, not the whole map.
+  const w0 = newWorld(3), w1 = structuredClone(w0);
+  w1.explored[100] = 1; w1.explored[200] = 1; w1.tick = 1;
+  const p = roundTrip(w0, w1)!;
+  assert.ok(JSON.stringify(p).length < 80, JSON.stringify(p));
+});
+
+test('delta: patches cannot write through prototype keys', () => {
+  const evil = JSON.parse('{"o":{"__proto__":{"s":{"polluted":true}}}}');
+  assert.throws(() => applyPatch({}, evil));
+  assert.equal(({} as Record<string, unknown>).polluted, undefined);
+  assert.throws(() => applyPatch([1, 2], { a: [[5, { s: 1 }]] }), /out of range/);
+  assert.throws(() => applyPatch(3, { o: { a: { s: 1 } } }), /expected an object/);
+});
+
+/** A small scripted session: talk to Pak Lawak, page through, then fish or walk. */
+function scripted(w: World, flavour: number): Intent[] {
+  if (w.dialog) return [{ t: 'say', option: 0 }];
+  if (w.step === 0 && !w.player.task) return [{ t: 'talk', npc: 'lawak' }];
+  if (w.step >= 1 && !w.player.task && !w.player.path.length) return [flavour % 2 ? { t: 'fish', spot: 0 } : { t: 'walk', to: { x: 12 + (w.tick % 5), y: 26 } }];
+  return [];
+}
+
+test('realm: each player evolves exactly as a solo game would (deterministic, no interference)', () => {
+  const realm = new Realm();
+  const seeds = [11, 12, 13];
+  const ids = seeds.map(s => realm.join(newWorld(s))!);
+  const solo = seeds.map(s => new GameHost(newWorld(s)));
+  for (let t = 0; t < 400; t++) {
+    ids.forEach((id, i) => { for (const it of scripted(realm.world(id)!, i)) realm.submit(id, it); });
+    solo.forEach((h, i) => { for (const it of scripted(h.world, i)) h.submit(it); });
+    realm.tick();
+    solo.forEach(h => h.tick());
+  }
+  ids.forEach((id, i) => assert.equal(save(realm.world(id)!), save(solo[i].world), `player ${id}`));
+  assert.ok(realm.world(ids[1])!.fishCaught > 0, 'the fisher fished');
+});
+
+test('realm: who sees whom, with a margin so people at the edge do not flicker', () => {
+  const realm = new Realm();
+  const a = realm.join(newWorld(1))!, b = realm.join(newWorld(2))!;
+  const put = (id: number, x: number, y: number) => { const p = realm.world(id)!.player; p.x = x; p.y = y; };
+  put(a, 10, 20); put(b, 10 + SEE_RADIUS, 20);
+  assert.deepEqual(realm.visibleTo(a), [b]);
+  assert.deepEqual(realm.visibleTo(b), [a], 'seeing is mutual');
+  put(b, 10 + SEE_RADIUS + 1, 20);
+  assert.deepEqual(realm.visibleTo(a), [], 'a stranger just past the radius is not shown');
+  assert.deepEqual(realm.visibleTo(a, new Set([b])), [b], 'someone already seen stays until FORGET_RADIUS');
+  put(b, 10 + FORGET_RADIUS + 1, 20);
+  assert.deepEqual(realm.visibleTo(a, new Set([b])), []);
+  realm.world(b)!.player.fishing = true; realm.world(b)!.player.task = { t: 'fish', spot: 2 };
+  assert.deepEqual(realm.avatar(b), { id: b, x: 10 + FORGET_RADIUS + 1, y: 20, facing: 1, fishing: 2 });
+  realm.leave(b);
+  assert.equal(realm.avatar(b), null);
+  assert.equal(realm.size, 1);
+});
+
+test('realm: refuses players beyond MAX_PLAYERS', () => {
+  const realm = new Realm();
+  for (let i = 0; i < MAX_PLAYERS; i++) assert.ok(realm.join(newWorld(i)) !== null);
+  assert.equal(realm.join(newWorld(0)), null);
+});
+
+test('sync: a Mirror fed only deltas stays identical to the server through all of Act 1', async () => {
+  const { decide, act1Done } = await import('./bot.ts');
+  const realm = new Realm();
+  const me = realm.join(newWorld(4))!;
+  const other = realm.join(newWorld(5))!;
+  const out = new Outbox(realm, me);
+  const wire = <T>(m: T): T => JSON.parse(JSON.stringify(m)) as T;
+  const mirror = new Mirror(wire(out.welcome()));
+  const mind = { sold: false };
+  let bytes = 0, whole = 0, msgs = 0;
+  for (let t = 0; t < 20000 && !act1Done(realm.world(me)!); t++) {
+    for (const it of decide(mirror.world, mind)) {
+      const ev = realm.submit(me, it)!;
+      mirror.apply(wire(out.update('act', ev)));
+    }
+    // The other player wanders, coming in and out of view.
+    if (t % 40 === 0) realm.submit(other, { t: 'walk', to: t % 80 ? { x: 40, y: 12 } : { x: 12, y: 27 } });
+    const evs = realm.tick();
+    const m = out.update('tick', evs.get(me)!);
+    const text = JSON.stringify(m);
+    bytes += text.length; whole += JSON.stringify({ t: 'state', kind: 'tick', world: realm.world(me), ev: m.ev ?? [] }).length; msgs++;
+    const u = mirror.apply(JSON.parse(text));
+    assert.deepEqual(u.others.map(o => o.id), out.sees());
+    if (t % 25 === 0) assert.equal(save(mirror.world), save(realm.world(me)!), `drifted at tick ${realm.world(me)!.tick}`);
+  }
+  assert.ok(act1Done(realm.world(me)!), 'finished Act 1 from the mirrored copy');
+  assert.equal(save(mirror.world), save(realm.world(me)!));
+  assert.ok(bytes * 10 < whole, `deltas: ${bytes} bytes over ${msgs} ticks, against ${whole} for whole Worlds`);
+});
+
+test('client link: offline play shows nobody else', async () => {
+  const { LoopbackLink } = await import('../src/client/net.ts');
+  const seen: number[] = [];
+  const link = new LoopbackLink(newWorld(1), u => seen.push(u.others.length));
+  link.tick(); link.send({ t: 'close' });
+  assert.deepEqual(seen, [0, 0]);
+});
