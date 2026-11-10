@@ -2,14 +2,16 @@
 // the server and the in-process loopback all share it.
 //
 // client → server:  hello (once), then intent messages
-// server → client:  state messages: 'welcome' after hello, 'act' after each applied intent,
-//                   'tick' after each 0.6 s step. Each carries the whole World for now; sending
-//                   only what is near the player is roadmap step 2. Every intent is answered
-//                   by an 'act' state or an error (bad message, too many intents this tick).
+// server → client:  'welcome' after hello: your id, your whole World once, and the players in
+//                   view. Then 'state' messages: kind 'act' after each applied intent, 'tick'
+//                   after each 0.6 s step. A state carries only what changed (see sync.ts): a
+//                   patch of your World, avatars that came into view or moved, and ids that
+//                   left view. Every intent is answered by an 'act' state or an error.
 import { ABILITIES, GEAR, ITEMS, NPCS } from '../sim/content.ts';
 import type { Ev, Intent, World } from '../sim/world.ts';
+import type { Patch } from './delta.ts';
 
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 /** The path the game server accepts WebSocket upgrades on. */
 export const WS_PATH = '/ws';
 /** Largest client message the server reads (a save is about 10 KB). */
@@ -18,9 +20,17 @@ export const MAX_MESSAGE_BYTES = 256 * 1024;
 export type Hello = { t: 'hello'; v: number; save?: string; seed?: number };
 export type ClientMsg = Hello | { t: 'intent'; it: Intent };
 
-export type UpdateKind = 'welcome' | 'act' | 'tick';
-export type Update = { kind: UpdateKind; world: World; ev: Ev[] };
-export type ServerMsg = ({ t: 'state' } & Update) | { t: 'error'; msg: string };
+/** What another player looks like from nearby. Their World stays on the server. */
+export type Avatar = { id: number; x: number; y: number; facing: 1 | -1; fishing?: number; fighting?: boolean };
+
+export type Welcome = { t: 'welcome'; you: number; world: World; others: Avatar[] };
+export type UpdateKind = 'act' | 'tick';
+/** d: patch of your World; seen: avatars new to view or changed; gone: ids out of view. Empty parts are left out. */
+export type StateMsg = { t: 'state'; kind: UpdateKind; d?: Patch; ev?: Ev[]; seen?: Avatar[]; gone?: number[] };
+export type ServerMsg = Welcome | StateMsg | { t: 'error'; msg: string };
+
+/** What the client draws from: its own World and whoever is in view (none when offline). */
+export type Update = { kind: UpdateKind | 'welcome'; world: World; ev: Ev[]; others: Avatar[] };
 
 // ---------- validation: everything from the network is untrusted ----------
 type Obj = Record<string, unknown>;

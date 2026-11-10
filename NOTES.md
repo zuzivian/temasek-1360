@@ -3,6 +3,41 @@
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
 
+## Done (10 Nov 2026): networking roadmap step 2, first slice (branch `autopilot/temasek-1360-server-2`)
+
+- **`src/net/realm.ts`, `Realm`:** the server now runs one shared realm instead of one world per connection.
+  Progression stays per player (DESIGN: "Progression is per player"), so each player keeps their own World in a
+  `GameHost`; the realm adds join/leave, ticks everyone in join order, and answers who is near whom.
+  `SEE_RADIUS` 14 tiles (Chebyshev, about a screen), `FORGET_RADIUS` 16 so people at the edge don't flicker.
+  `MAX_PLAYERS` 64 (the next hello gets `server full`, close 1013).
+- **`src/net/delta.ts`:** `diff()` / `applyPatch()` for JSON values (set, object keys, sparse array indices).
+  Revealing fog patches only the new tiles. `applyPatch` refuses `__proto__`/`constructor`/`prototype` keys.
+- **`src/net/sync.ts`:** `Outbox` (server, one per connection) remembers what its client holds and sends only the
+  change; `Mirror` (browser) applies it. Protocol is now **v2**: `welcome` (your id, your World once, avatars in
+  view), then `state` with optional `d` (patch), `ev`, `seen` (avatars new or changed), `gone` (ids out of view).
+  An idle tick is about 45 bytes, against ~3.6–10 KB before. A patch that doesn't apply drops the link and the page
+  carries on offline.
+- **Avatars** are `{id, x, y, facing, fishing?, fighting?}`: nothing else of another player's World leaves the
+  server. The client draws them as faded-in hero puppets tagged "Pemain N" (more faded while they fight, since
+  every fight is its own arena).
+- **Offline is unchanged:** `LoopbackLink` still runs a bare `GameHost`, with `others: []`.
+- **Tests (34 now):** delta round trips and prototype keys; realm players evolve byte-for-byte like solo games;
+  visibility with the margin; the cap; a Mirror fed only deltas stays identical to the server through all of Act 1
+  (and uses under a tenth of the bytes); over the socket, two clients see each other only when near, nothing about
+  a far player is sent, every tick is under a fifth of a whole-World message, and the bot's patched copy equals the
+  server's World at the end. Smoke opens a second online page and checks both see each other
+  (`smoke/10-two-players.png`).
+
+### Step 2: next
+
+- **Shared clock.** Each World still keeps its own `tick`, so the monsoon (and who's in port) differs between
+  players who joined at different times. A shared realm clock means moving `tick`/monsoon out of the per-player
+  World, which touches saves; it needs a call on what a loaded save's clock means.
+- Others only update on ticks (an intent's 'act' reply carries just your own World), so someone who stops to fish
+  shows it up to 0.6 s late. Fine for now.
+- Nothing is shared but presence: no chat, no seeing another's catch or fight, no co-op. Those belong to later
+  design calls (DESIGN: small co-op bonuses).
+
 ## Done (10 Nov 2026): networking roadmap step 1 (branch `autopilot/temasek-1360-server`)
 
 - **`src/net/host.ts`, `GameHost`:** owns one player's World. `submit(intent)` applies it at once through `act()`, and
@@ -85,8 +120,9 @@ A code review found 7 issues, all fixed:
    pirate lords.
 3. **Networking roadmap:**
    1. ~~move `src/sim` behind a WebSocket server that runs `step()` every 600 ms and accepts
-      intents~~ done on `autopilot/temasek-1360-server` (10 Nov). Still single-player worlds, one per connection.
-   2. send each client only what's near it
+      intents~~ done on `autopilot/temasek-1360-server` (10 Nov).
+   2. send each client only what's near it: first slice done on `autopilot/temasek-1360-server-2` (shared realm,
+      interest radius, deltas). Still to do: a shared clock (see "Step 2: next").
    3. Postgres saves and login
    4. atomic trades (the item-duplication lesson)
    5. one small cloud host, not the Mac mini
@@ -98,8 +134,13 @@ A code review found 7 issues, all fixed:
 ## Gotchas
 
 - **Server trust is step-1 level.** The server trusts the save the client sends in `hello` (no accounts until
-  step 3) and the timing grade in combat intents. Every state message carries the whole World (about 10 KB), which
-  is fine on localhost; trimming it is step 2.
+  step 3) and the timing grade in combat intents.
+- **Deltas assume an ordered, lossless channel** (one WebSocket). The Outbox diffs against what it last *sent*, so
+  never skip sending a message it built, or the client's copy drifts. If a transport ever drops messages, resend a
+  welcome.
+- **Smoke flake:** the offline "selling earned nothing" check failed once in 5 branch runs (random seed: no fish in
+  9 s). That code is unchanged from `main`; not fixed here.
+- **Player ids are per server run**, not accounts; they restart at 1 when the server restarts.
 - **Online dodge windows include latency.** The client opens the dodge ring when the windup tick *arrives* and
   closes it at the next one. The intent must reach the server before its next tick, so a slow link shortens the
   window. Not noticeable on localhost; not measured over a real network.
