@@ -1,5 +1,11 @@
 # NOTES: Temasek 1360 MVP
 
+## Autopilot in progress (networking step 1, branch `autopilot/temasek-1360-server`)
+
+- Task: run `src/sim` behind a WebSocket server (600 ms tick, intents in, state out); keep offline play via an in-process loopback.
+- Done: `src/net/protocol.ts` (wire format + intent validation), `src/net/host.ts` (GameHost: submit/tick/replay), `tests/net.test.ts`.
+- Next: zero-dependency WebSocket server in `server/`, server tests, then client `Link` (loopback + socket) in `src/client/net.ts`.
+
 Handoff notes for whoever picks this up next (human or agent). Read this, `README.md`,
 `docs/DESIGN.md` and `git log` before changing anything.
 
