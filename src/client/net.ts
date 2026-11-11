@@ -10,7 +10,7 @@
 //    Mirror of this player's World and the players nearby, patched by each message.
 import { offsetFrom, realmTick } from '../net/clock.ts';
 import { GameHost } from '../net/host.ts';
-import { avatarOf, IDLE_MS, PRESENCE_PATH, MAX_PATH, POLL_ALONE_MS, POLL_NEAR_MS, type Pose, type PresenceRes, type Seen } from '../net/presence.ts';
+import { avatarOf, HEARTBEAT_MS, IDLE_MS, PRESENCE_PATH, MAX_PATH, POLL_ALONE_MS, POLL_NEAR_MS, type Pose, type PresenceRes, type Seen } from '../net/presence.ts';
 import { PROTOCOL, WS_PATH, type Hello, type ServerMsg, type Update } from '../net/protocol.ts';
 import { Mirror } from '../net/sync.ts';
 import { setClock, type Ev, type Intent, type World } from '../sim/world.ts';
@@ -79,10 +79,14 @@ export class LiveLink implements Link {
   seen: Seen[] = [];
   /** Our public id, once the function has told us. */
   you: number | null = null;
-  /** True while posting: the tab is visible and was used in the last IDLE_MS. */
+  /**
+   * True while posting: the tab is visible and was used in the last IDLE_MS. Otherwise the tab is
+   * away: it stays in the world (others see it dimmed) on a tiny heartbeat every HEARTBEAT_MS.
+   */
   active = false;
-  /** Requests made so far (for tests and the cost notes). */
+  /** Posts (pose + who's near) and heartbeats sent so far (for tests and the cost notes). */
   posts = 0;
+  beats = 0;
   private readonly onUpdate: OnUpdate;
   private readonly o: Required<Omit<LiveOpts, 'beacon'>> & Pick<LiveOpts, 'beacon'>;
   private readonly token = newToken();
@@ -157,20 +161,39 @@ export class LiveLink implements Link {
     this.lastInput = this.o.now();
     this.refresh();
   }
-  setVisible(v: boolean): void { this.visible = v; this.refresh(); }
+  /** Coming back to the tab counts as being here: it rejoins (and resyncs) at once. */
+  setVisible(v: boolean): void {
+    if (v && !this.visible) this.lastInput = this.o.now();
+    this.visible = v; this.refresh();
+  }
 
-  /** Start or stop posting to match visibility and idleness. */
+  /** Switch between posting (visible and in use) and away (heartbeats only) as things change. */
   private refresh(): void {
     if (this.closed) return;
     const want = this.visible && this.o.now() - this.lastInput < IDLE_MS;
     if (want === this.active) return;
     this.active = want;
-    if (want) { this.failures = 0; void this.post(); return; }
     if (this.timer !== null) { this.o.clearTimer(this.timer); this.timer = null; }
+    // Back: resync at once (who's here, the clock); pump() catches the World up on the next frame.
+    if (want) { this.failures = 0; void this.post(); return; }
     this.seen = [];
-    this.leave();
+    this.beat(true);
   }
 
+  /** Tell the function we're still here, as away, and schedule the next one. Nothing is read back. */
+  private beat(first = false): void {
+    if (this.closed || this.active) return;
+    if (this.joined) {
+      this.beats++;
+      const body = JSON.stringify({ token: this.token, beat: true, pose: poseOf(this.world) });
+      // The first one goes as a beacon: a tab being hidden may be frozen before a fetch finishes.
+      if (first && this.o.beacon) this.o.beacon(this.o.url, body);
+      else void this.o.fetch(this.o.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body }).catch(() => {});
+    }
+    this.timer = this.o.setTimer(() => { this.timer = null; this.beat(); }, HEARTBEAT_MS);
+  }
+
+  /** Leave the world at once (the page is closing). */
   private leave(): void {
     if (!this.joined) return;
     this.joined = false;
@@ -215,10 +238,18 @@ export class LiveLink implements Link {
     }
   }
 
+  /** Rejoin after close(): a page restored from the back/forward cache. */
+  reopen(): void {
+    if (!this.closed) return;
+    this.closed = false; this.active = false;
+    this.lastInput = this.o.now();
+    this.refresh();
+  }
+
   close(): void {
     if (this.timer !== null) this.o.clearTimer(this.timer);
     this.timer = null;
-    if (this.active) this.leave();
+    this.leave();
     this.active = false; this.closed = true; this.seen = [];
   }
 }

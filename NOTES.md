@@ -33,10 +33,14 @@ light, free tier, cost only while people are actually playing, no VM ticking aro
   (position, facing, the next ≤8 path tiles, fishing/fighting) every **5 s alone / 2 s with someone in view**, and
   gets back the players within `SEE_RADIUS` (keeps them to `FORGET_RADIUS`, as the WebSocket realm does). Others'
   walks are played forward on the shared clock between posts, so they don't jump.
-- **Hidden or idle tabs send nothing.** `visibilitychange` hidden → a `sendBeacon` leave and the timer stops; no input
-  for 2 min → leave; any input → rejoin. A tab that vanishes without a beacon drops out after 15 s.
-- **Storage:** one Redis hash, one HTTP request = 3 commands (HSET, PEXPIRE 60 s, HGETALL) per post. The hash expires
-  60 s after the last post, so an empty realm stores nothing. Without KV env vars the function keeps presence in its
+- **Hidden or idle tabs stay in the world, as away** (Nat's playtest, 10 Nov: "they disappear when I tab out"). Hidden,
+  or no input for 2 min → no more polling, just a tiny heartbeat (`beat`: HSET + PEXPIRE, nothing read back) at once
+  (as a beacon) and every 60 s; others draw them dimmed, tagged "away", standing where they were last seen. A visible
+  player who goes quiet for 15 s is shown as away too. Removed only after **10 min without any post or heartbeat**, or at
+  once when the page closes (`pagehide` → `sendBeacon` leave; `pageshow` from the back/forward cache rejoins). Showing
+  the tab again counts as input: it posts at once, so who's there and the clock resync immediately.
+- **Storage:** one Redis hash, one HTTP request = 3 commands (HSET, PEXPIRE, HGETALL) per post, 2 per heartbeat. The
+  hash expires 11 min after the last write, so an empty realm stores nothing. Without KV env vars the function keeps presence in its
   own memory (`store: "memory"` in every reply), which works only while all players hit the same instance; fine for a
   preview, not for real use.
 - **Identity:** each tab makes a random 128-bit token; others see only `sha256(token)` → a 31-bit id, so nobody can post
@@ -48,8 +52,9 @@ light, free tier, cost only while people are actually playing, no VM ticking aro
 
 **Cost, at free-tier limits (Nov 2026; re-check the plan pages)**
 
-- Requests per player-hour: 720 alone, 1,800 with someone in view. Zero players: zero.
-- Upstash Redis free: 500K commands/month → ~230 player-hours alone or ~90 together per month. Over the cap Upstash
+- Requests per player-hour: 720 alone, 1,800 with someone in view, 60 for a hidden/idle tab. Zero open tabs: zero.
+- Upstash Redis free: 500K commands/month → ~230 player-hours alone or ~90 together per month (a hidden tab costs
+  120 commands/hour, so a tab left open in the background all month is ~90K). Over the cap Upstash
   refuses commands (no charge on the free plan); the game then just shows nobody else.
 - Vercel Hobby: 1M function invocations/month → ~550+ player-hours. Hobby can't be billed for overage; it pauses.
 - Expected cost: **$0**.

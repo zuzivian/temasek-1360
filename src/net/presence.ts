@@ -13,28 +13,33 @@ import type { Avatar } from './protocol.ts';
 import { FORGET_RADIUS, MAX_PLAYERS, SEE_RADIUS } from './realm.ts';
 
 export const PRESENCE_PATH = '/api/world';
-/** A player who hasn't posted for this long has gone (closed the tab without saying so). */
+/** A visible player who hasn't posted for this long is shown as away (dimmed)… */
 export const STALE_MS = 15_000;
+/** …and removed only after this long with no post or heartbeat at all (or at once on a leave). */
+export const AWAY_TTL_MS = 10 * 60_000;
+/** A hidden or idle tab sends a tiny heartbeat this often, so it stays in the world as away. */
+export const HEARTBEAT_MS = 60_000;
 /** How often a visible, active tab posts: alone, and with someone in view. */
 export const POLL_ALONE_MS = 5_000;
 export const POLL_NEAR_MS = 2_000;
-/** A tab with no input for this long leaves the realm until the next input. */
+/** A visible tab with no input for this long goes away (heartbeats only) until the next input. */
 export const IDLE_MS = 120_000;
-/** The whole presence key expires this long after the last post, so an empty realm stores nothing. */
-export const KEY_TTL_MS = 60_000;
+/** The whole presence key expires this long after the last post or heartbeat, so an empty realm stores nothing. */
+export const KEY_TTL_MS = AWAY_TTL_MS + 60_000;
 /** Steps of a player's walk that are shared, so others can play the walk out between posts. */
 export const MAX_PATH = 8;
 /** Tiles a walker covers per tick (moveAlong in world.ts). */
 const WALK_PER_TICK = 2;
 
 /** What a player shares: where they are at realm tick `tick`, and where they are walking. */
-export type Pose = { x: number; y: number; facing: 1 | -1; tick: number; path?: Vec[]; fishing?: number; fighting?: boolean };
+export type Pose = { x: number; y: number; facing: 1 | -1; tick: number; path?: Vec[]; fishing?: number; fighting?: boolean; away?: boolean };
 /** Another player as the function sends them. */
 export type Seen = Pose & { id: number };
 /** A stored record: a pose and when the server got it. */
 export type Rec = { p: Pose; at: number };
 
-export type PresenceReq = { token: string; pose?: Pose; leave?: boolean; seen?: number[] };
+/** A post (pose, get who's near), a heartbeat (`beat`: pose kept, nothing read back) or a leave. */
+export type PresenceReq = { token: string; pose?: Pose; leave?: boolean; beat?: boolean; seen?: number[] };
 export type PresenceRes = { now: number; tick: number; store: 'kv' | 'memory'; you?: number; others?: Seen[] };
 export type Reply = { status: number; body: PresenceRes | { error: string } };
 
@@ -42,6 +47,8 @@ export interface PresenceStore {
   readonly kind: 'kv' | 'memory';
   /** Write one player's record (or delete it when `rec` is null) and read back everyone's, in one round trip. */
   sync(id: number, rec: Rec | null, nowMs: number): Promise<Map<number, Rec>>;
+  /** Write one player's record without reading anything back (a heartbeat). */
+  put(id: number, rec: Rec, nowMs: number): Promise<void>;
   /** Forget players who went quiet. */
   drop(ids: number[]): Promise<void>;
 }
@@ -63,6 +70,7 @@ export function parsePose(raw: unknown): Pose | null {
   }
   if (raw.fishing !== undefined) { if (!isInt(raw.fishing, 0, 1000)) return null; p.fishing = raw.fishing; }
   if (raw.fighting !== undefined) { if (typeof raw.fighting !== 'boolean') return null; if (raw.fighting) p.fighting = true; }
+  if (raw.away !== undefined) { if (typeof raw.away !== 'boolean') return null; if (raw.away) p.away = true; }
   return p;
 }
 
@@ -74,6 +82,7 @@ export function parsePresenceReq(raw: unknown): PresenceReq | null {
   const pose = parsePose(raw.pose);
   if (!pose) return null;
   out.pose = pose;
+  if (raw.beat === true) { out.beat = true; out.pose.away = true; return out; }
   if (raw.seen !== undefined) {
     if (!Array.isArray(raw.seen) || raw.seen.length > MAX_PLAYERS || !raw.seen.every(n => isInt(n, 1, 2 ** 31))) return null;
     out.seen = raw.seen as number[];
@@ -108,16 +117,25 @@ export function avatarOf(s: Seen, tick: number): Avatar {
   const a: Avatar = { id: s.id, x: p.x, y: p.y, facing: p.facing };
   if (p.fishing !== undefined && !p.path) a.fishing = p.fishing;
   if (p.fighting) a.fighting = true;
+  if (p.away) a.away = true;
   return a;
 }
 
-/** The players `me` (id `myId`) should see now, as in Realm.visibleTo: near ones, and seen ones not yet far. */
+/**
+ * The players `me` (id `myId`) should see now, as in Realm.visibleTo: near ones, and seen ones not
+ * yet far. Someone hidden, idle or gone quiet for STALE_MS is still there, marked away.
+ */
 export function nearby(myId: number, me: Pose, all: Map<number, Rec>, seen: ReadonlySet<number>, nowMs: number): Seen[] {
   const tick = realmTick(nowMs), here = poseAt(me, tick), out: Seen[] = [];
   for (const [id, r] of all) {
-    if (id === myId || nowMs - r.at > STALE_MS) continue;
+    if (id === myId || nowMs - r.at > AWAY_TTL_MS) continue;
     const d = chebyshev(here, poseAt(r.p, tick));
-    if (d <= SEE_RADIUS || (seen.has(id) && d <= FORGET_RADIUS)) out.push({ id, ...r.p });
+    if (!(d <= SEE_RADIUS || (seen.has(id) && d <= FORGET_RADIUS))) continue;
+    const s: Seen = { id, ...r.p };
+    if (nowMs - r.at > STALE_MS) s.away = true;
+    // An away player's walk is not played forward: they stand where they were last seen.
+    if (s.away) delete s.path;
+    out.push(s);
   }
   return out.sort((a, b) => a.id - b.id);
 }
@@ -126,19 +144,20 @@ export function nearby(myId: number, me: Pose, all: Map<number, Rec>, seen: Read
 export const clockReply = (store: PresenceStore, nowMs: number): Reply =>
   ({ status: 200, body: { now: nowMs, tick: realmTick(nowMs), store: store.kind } });
 
-/** POST: post a pose (or leave) and get back who is near. */
+/** POST: post a pose and get back who is near; or heartbeat (stay, as away); or leave. */
 export async function handlePresence(store: PresenceStore, raw: unknown, nowMs: number): Promise<Reply> {
   const req = parsePresenceReq(raw);
   if (!req) return { status: 400, body: { error: 'bad request' } };
   const id = await publicId(req.token);
   const base = clockReply(store, nowMs).body as PresenceRes;
   if (req.leave) { await store.sync(id, null, nowMs); return { status: 200, body: base }; }
+  if (req.beat) { await store.put(id, { p: req.pose!, at: nowMs }, nowMs); return { status: 200, body: { ...base, you: id } }; }
   const pose = req.pose!;
   const all = await store.sync(id, { p: pose, at: nowMs }, nowMs);
   const stale: number[] = [];
   let live = 0;
   for (const [other, r] of all) {
-    if (nowMs - r.at > STALE_MS) stale.push(other);
+    if (nowMs - r.at > AWAY_TTL_MS) stale.push(other);
     else if (other !== id) live++;
   }
   if (stale.length) await store.drop(stale);
@@ -158,6 +177,7 @@ export class MemoryStore implements PresenceStore {
     if (rec) { this.recs.set(id, rec); this.lastPost = nowMs; } else this.recs.delete(id);
     return new Map(this.recs);
   }
+  async put(id: number, rec: Rec, nowMs: number): Promise<void> { await this.sync(id, rec, nowMs); }
   async drop(ids: number[]): Promise<void> { for (const id of ids) this.recs.delete(id); }
 }
 
@@ -203,6 +223,11 @@ export class RedisStore implements PresenceStore {
       } catch { /* skip a damaged record */ }
     }
     return all;
+  }
+
+  /** A heartbeat: two commands (HSET, PEXPIRE), nothing read back. */
+  async put(id: number, rec: Rec, _nowMs: number): Promise<void> {
+    await this.pipeline([['HSET', this.key, String(id), JSON.stringify(rec)], ['PEXPIRE', this.key, KEY_TTL_MS]]);
   }
 
   async drop(ids: number[]): Promise<void> { if (ids.length) await this.pipeline([['HDEL', this.key, ...ids.map(String)]]); }

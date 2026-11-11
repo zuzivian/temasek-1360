@@ -124,22 +124,33 @@ try {
     if (!(Math.abs(leftSecs(c1.left) - leftSecs(c2.left)) <= 1)) errors.push(`live: different monsoon countdowns ${c1.left} vs ${c2.left}`);
     await l1.waitForTimeout(1200);
     await l1.screenshot({ path: 'smoke/11-shared-world.png' });
-    // Hiding a tab says goodbye at once (sendBeacon) and stops its requests, so the other page
-    // stops seeing it. (Closing a headless context can drop the beacon, so hide it instead.)
+    // Hiding a tab keeps the player in the world, dimmed as away, on a heartbeat only; showing it
+    // again resyncs at once. Closing the page (pagehide) leaves at once.
     const l2posts = () => l2.evaluate(() => window.__game.live.posts);
-    await l2.evaluate(() => {
-      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
-      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    const setHidden = (p, hidden) => p.evaluate(h => {
+      Object.defineProperty(document, 'hidden', { value: h, configurable: true });
+      Object.defineProperty(document, 'visibilityState', { value: h ? 'hidden' : 'visible', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));
-    });
+    }, hidden);
+    await setHidden(l2, true);
     const hiddenAt = await l2posts();
+    try { await l1.waitForFunction(() => window.__game.others.length === 1 && window.__game.others[0].away, null, { timeout: 8000 }); }
+    catch { errors.push(`live: a hidden tab was not shown as away ${JSON.stringify(await l1.evaluate(() => window.__game.others))}`); }
+    await l1.waitForTimeout(2500);
+    await l1.screenshot({ path: 'smoke/12-away.png' });
+    if ((await l2posts()) !== hiddenAt) errors.push('live: a hidden tab kept polling');
+    await setHidden(l2, false);
+    try {
+      await l2.waitForFunction(n => window.__game.live.posts > n && window.__game.others.length === 1, hiddenAt, { timeout: 4000 });
+      await l1.waitForFunction(() => window.__game.others.length === 1 && !window.__game.others[0].away, null, { timeout: 8000 });
+    } catch { errors.push(`live: coming back did not resync ${JSON.stringify(await l1.evaluate(() => window.__game.others))}`); }
+    await l2.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false })));
     try { await l1.waitForFunction(() => window.__game.others.length === 0, null, { timeout: 8000 }); }
-    catch { errors.push(`live: a hidden tab was still on the beach ${JSON.stringify(await l1.evaluate(() => window.__game.others))}`); }
+    catch { errors.push('live: a closed page was still on the beach'); }
     const t0 = Date.now(), before = posts.length;
     await l1.waitForTimeout(10_000);
     const rate = (posts.length - before) / ((Date.now() - t0) / 1000);
     if (rate > 0.35) errors.push(`live: a lone player posted ${rate.toFixed(2)}/s, expected about 0.2/s`);
-    if ((await l2posts()) !== hiddenAt) errors.push('live: a hidden tab kept posting');
     await l2.close();
     console.log(`live ok: ${c1.name}, ${c1.left} on both pages; ${posts.length} presence posts in all, ${rate.toFixed(2)}/s alone`);
     await l1.close();

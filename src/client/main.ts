@@ -571,7 +571,9 @@ document.addEventListener('visibilitychange', () => {
 });
 // Any input counts as being here (camera moves too, not just intents), so an idle tab can rejoin.
 for (const t of ['pointerdown', 'keydown', 'wheel'] as const) addEventListener(t, () => { if (link instanceof LiveLink) link.touch(); }, { passive: true });
+// Closing (or navigating away from) the page leaves the world at once; hiding it only goes away.
 addEventListener('pagehide', () => { if (link instanceof LiveLink) link.close(); });
+addEventListener('pageshow', ev => { if (ev.persisted && link instanceof LiveLink) link.reopen(); });
 
 // ---------- main loop ----------
 let lastFrame = performance.now();

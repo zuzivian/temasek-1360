@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EPOCH_MS, offsetFrom, realmTick, tickStart } from '../src/net/clock.ts';
 import {
-  IDLE_MS, KEY_TTL_MS, MemoryStore, POLL_ALONE_MS, POLL_NEAR_MS, RedisStore, STALE_MS, avatarOf, clockReply, handlePresence,
+  AWAY_TTL_MS, HEARTBEAT_MS, IDLE_MS, KEY_TTL_MS, MemoryStore, POLL_ALONE_MS, POLL_NEAR_MS, RedisStore, STALE_MS, avatarOf, clockReply, handlePresence,
   parsePresenceReq, poseAt, publicId, storeFromEnv, type PresenceRes, type Seen
 } from '../src/net/presence.ts';
 import { FORGET_RADIUS, MAX_PLAYERS, SEE_RADIUS } from '../src/net/realm.ts';
@@ -89,7 +89,7 @@ test('presence: poseAt plays a shared walk forward at 2 tiles a tick', () => {
   assert.equal(avatarOf({ ...pose(1, 1), id: 9, fishing: 2 }, 100).fishing, 2);
 });
 
-test('presence: players see who is near, keep seeing them to the forget radius, and stale ones vanish', async () => {
+test('presence: players see who is near, keep seeing them to the forget radius, quiet ones go away, then vanish', async () => {
   const store = new MemoryStore(), now = tickStart(1000);
   const post = async (n: number, x: number, y: number, t = now, seen?: number[]) =>
     (await handlePresence(store, { token: tok(n), pose: pose(x, y, realmTick(t)), seen }, t)).body as PresenceRes;
@@ -105,14 +105,18 @@ test('presence: players see who is near, keep seeing them to the forget radius, 
   await post(2, 10 + FORGET_RADIUS, 20);
   assert.deepEqual((await post(1, 10, 20, now, [b.you!])).others!.map(o => o.id), [b.you]);
   assert.deepEqual((await post(1, 10, 20, now, [])).others!.map(o => o.id), []);
-  // Leaving removes you at once; going quiet removes you after STALE_MS.
+  // Leaving removes you at once. Going quiet makes you away after STALE_MS, standing where you
+  // were last seen, and removes you only after AWAY_TTL_MS.
   await handlePresence(store, { token: tok(2), leave: true }, now);
-  await post(4, 11, 20, now);
-  const later = now + STALE_MS + 1;
-  assert.deepEqual((await post(1, 10, 20, later)).others, [], 'player 4 went quiet, player 2 left');
-  assert.equal((await store.sync(0, null, later)).size, 1, 'stale records were dropped');
+  await handlePresence(store, { token: tok(4), pose: { ...pose(11, 20, realmTick(now)), path: [{ x: 12, y: 20 }] } }, now);
+  const quiet = now + STALE_MS + 1;
+  const seen = (await post(1, 10, 20, quiet)).others!;
+  assert.deepEqual(seen.map(o => [o.id, o.away, o.path]), [[await publicId(tok(4)), true, undefined]], 'player 2 left; player 4 is away, not walking');
+  const gone = now + AWAY_TTL_MS + 1;
+  assert.deepEqual((await post(1, 10, 20, gone)).others, [], 'player 4 expired after the away TTL');
+  assert.equal((await store.sync(0, null, gone)).size, 1, 'expired records were dropped');
   // Nobody posting for KEY_TTL_MS: the realm is empty again.
-  assert.equal((await store.sync(0, null, later + KEY_TTL_MS + 1)).size, 0);
+  assert.equal((await store.sync(0, null, gone + KEY_TTL_MS + 1)).size, 0);
 });
 
 test('presence: the realm is capped at MAX_PLAYERS', async () => {
@@ -154,6 +158,10 @@ test('presence: the Redis store is one HTTP request of three commands per post',
   assert.deepEqual(kv.stats, { requests: 1, commands: 3, auth: 'Bearer secret' });
   const r = (await handlePresence(store, { token: tok(2), pose: pose(12, 20, 77) }, now)).body as PresenceRes;
   assert.deepEqual(r.others, [{ id: await publicId(tok(1)), ...pose(10, 20, 77) }]);
+  const before = { ...kv.stats };
+  const hb = await handlePresence(store, { token: tok(1), beat: true, pose: pose(10, 20, 77) }, now);
+  assert.deepEqual([kv.stats.requests - before.requests, kv.stats.commands - before.commands], [1, 2], 'a heartbeat: one request, HSET + PEXPIRE, nothing read');
+  assert.equal((hb.body as PresenceRes).others, undefined, 'and nothing sent back but the time');
   kv.hashes.get('t1360:presence')!.set('5', 'not json');
   assert.equal((await store.sync(1, null, now)).size, 2, 'a damaged record is skipped, not fatal');
   assert.equal((clockReply(store, now).body as PresenceRes).store, 'kv');
@@ -161,11 +169,20 @@ test('presence: the Redis store is one HTTP request of three commands per post',
 
 // ---------- LiveLink against the real api/world.ts handlers ----------
 
-/** A fake wall clock and timers, and fetch wired straight into api/world.ts. */
-function harness() {
+/**
+ * A fake wall clock and timers, with fetch (and sendBeacon) wired straight into api/world.ts, or
+ * with `own: true` into a presence handler of its own that also runs on the fake clock, for TTLs.
+ */
+function harness(opts0: { own?: boolean } = {}) {
   const t = { now: tickStart(1_433_000) + 123 };
   let timers: { at: number; fn: () => void; id: number }[] = [], nextId = 1;
+  const store = new MemoryStore(), stats = { posts: 0, beats: 0, leaves: 0 };
   const fetchFn: LiveOpts['fetch'] = async (url, init) => {
+    if (init?.body) { const b = JSON.parse(init.body); if (b.leave) stats.leaves++; else if (b.beat) stats.beats++; else stats.posts++; }
+    if (opts0.own) {
+      const r = init?.method === 'POST' ? await handlePresence(store, JSON.parse(init.body!), t.now) : clockReply(store, t.now);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body };
+    }
     const req = new Request(`http://localhost${url}`, { method: init?.method ?? 'GET', body: init?.body });
     const res = await api.default(req);
     // The handler stamps Date.now(); report it on our fake clock instead so offsets are testable.
@@ -174,11 +191,14 @@ function harness() {
   };
   const opts = (): LiveOpts => ({
     url: '/api/world', fetch: fetchFn, now: () => t.now,
+    beacon: (url, body) => { void fetchFn(url, { method: 'POST', body }); },
     setTimer: (fn, ms) => { const id = nextId++; timers.push({ at: t.now + ms, fn, id }); return id; },
     clearTimer: h => { timers = timers.filter(x => x.id !== h); }
   });
   /** Move the clock on, firing timers that come due and letting their requests settle. */
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); };
   const advance = async (ms: number, links: LiveLink[] = []) => {
+    await settle(); // let requests already in flight land (and schedule their next timer) first
     const end = t.now + ms;
     for (;;) {
       timers.sort((a, b) => a.at - b.at);
@@ -194,7 +214,7 @@ function harness() {
     for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
   };
   const pending = () => timers.length;
-  return { t, opts, advance, pending };
+  return { t, opts, advance, pending, store, stats, settle };
 }
 
 test('LiveLink: ticks lazily up to the realm clock, and jumps after a long gap', async () => {
@@ -225,24 +245,27 @@ test('LiveLink: posts only while visible and in use, slower when alone', async (
   assert.equal(link.posts, 5, `alone: one post every ${POLL_ALONE_MS / 1000} s`);
   link.setVisible(false);
   const hidden = link.posts;
-  await h.advance(60_000, [link]);
-  assert.equal(link.posts, hidden, 'a hidden tab sends nothing');
-  assert.equal(h.pending(), 0, 'and keeps no timer');
+  await h.advance(5 * 60_000 + 1, [link]);
+  assert.equal(link.posts, hidden, 'a hidden tab polls nothing');
+  assert.equal(link.beats, 6, `only a heartbeat at once, then one every ${HEARTBEAT_MS / 1000} s`);
+  assert.equal(h.pending(), 1, 'one timer: the next heartbeat');
   link.setVisible(true);
   await h.advance(0, [link]);
-  assert.equal(link.posts, hidden + 1, 'back: posts at once');
-  // Idle: after IDLE_MS without input it leaves; any input brings it back.
+  assert.equal(link.posts, hidden + 1, 'back: posts (resyncs) at once');
+  // Idle: after IDLE_MS without input it goes away on heartbeats; any input brings it back.
   await h.advance(IDLE_MS + POLL_ALONE_MS, [link]);
-  assert.equal(link.active, false, 'idle tabs leave');
-  const idle = link.posts;
+  assert.equal(link.active, false, 'idle tabs go away');
+  const idle = link.posts, idleBeats = link.beats;
   await h.advance(5 * 60_000, [link]);
-  assert.equal(link.posts, idle, 'an idle tab sends nothing');
+  assert.equal(link.posts, idle, 'an idle tab polls nothing');
+  assert.equal(link.beats - idleBeats, 5, 'just heartbeats');
   link.touch();
   await h.advance(0, [link]);
   assert.equal(link.active, true);
   assert.equal(link.posts, idle + 1);
   link.close();
-  assert.equal(h.pending(), 0);
+  assert.equal(h.pending(), 0, 'closed: no timers at all');
+  assert.equal(h.stats.leaves, 1, 'and one leave');
 });
 
 test('LiveLink e2e: two clients on api/world see each other and the same monsoon countdown', async () => {
@@ -268,11 +291,57 @@ test('LiveLink e2e: two clients on api/world see each other and the same monsoon
   assert.deepEqual({ x: seen.x, y: seen.y }, { x: b.world.player.x, y: b.world.player.y }, 'A draws B where B is');
   assert.deepEqual({ x: b.world.player.x, y: b.world.player.y }, goal);
   assert.ok(a.posts > 1 && b.posts > 1);
-  // B hides the tab: A stops seeing B on A's next post.
+  // B hides the tab: A still sees B, dimmed as away, where B stood.
   b.setVisible(false);
   await h.advance(POLL_NEAR_MS + 10, [a, b]);
-  assert.deepEqual(a.others(), [], 'a hidden player leaves the beach');
+  assert.deepEqual(a.others().map(o => [o.id, o.away, o.x, o.y]), [[b.you, true, goal!.x, goal!.y]], 'a hidden player stays, away');
+  // B comes back: resynced at once, on the same clock, and no longer away for A.
+  h.t.now += 30_000;
+  b.setVisible(true);
+  await h.advance(POLL_NEAR_MS + 10, [a, b]);
+  assert.deepEqual(b.others().map(o => o.id), [a.you], 'B sees A again straight away');
+  assert.equal(a.others()[0]?.away, undefined, 'A sees B back');
+  assert.equal(a.world.tick, b.world.tick);
   a.close(); b.close();
+});
+
+test('LiveLink: a hidden tab stays in the world for 5 min, expires after the away TTL, and a leave beacon removes it at once', async () => {
+  const h = harness({ own: true });
+  const a = await LiveLink.connect(newWorld(1), () => {}, h.opts());
+  const b = await LiveLink.connect(newWorld(2), () => {}, h.opts());
+  await h.advance(POLL_ALONE_MS, [a, b]);
+  assert.deepEqual(a.others().map(o => o.id), [b.you]);
+  const bId = b.you;
+  // B is hidden for five minutes: heartbeats keep B there, as away.
+  b.setVisible(false);
+  for (let m = 1; m <= 5; m++) {
+    await h.advance(60_000, [a, b]);
+    a.touch(); // A keeps playing
+    assert.deepEqual(a.others().map(o => [o.id, o.away]), [[bId, true]], `B still there, away, after ${m} min`);
+  }
+  assert.ok(h.stats.beats >= 5 && h.stats.beats <= 7, `about one heartbeat a minute (${h.stats.beats})`);
+  // B's tab is frozen (no more heartbeats): B stays away until the TTL, then is gone.
+  b.close(); // stop its timers…
+  await h.settle();
+  await h.store.sync(bId!, { p: { ...poseOf(b.world), away: true }, at: h.t.now }, h.t.now); // …but undo its leave: as if frozen, not closed
+  await h.advance(AWAY_TTL_MS - 30_000, [a]);
+  a.touch();
+  await h.advance(POLL_NEAR_MS, [a]);
+  assert.deepEqual(a.others().map(o => o.id), [bId], 'still there just inside the TTL');
+  await h.advance(60_000, [a]);
+  a.touch();
+  await h.advance(POLL_ALONE_MS, [a]);
+  assert.deepEqual(a.others(), [], 'gone after the TTL');
+  // A third player closes the page: the pagehide beacon removes them on A's very next post.
+  const c = await LiveLink.connect(newWorld(3), () => {}, h.opts());
+  await h.advance(POLL_ALONE_MS, [a, c]);
+  assert.deepEqual(a.others().map(o => o.id), [c.you]);
+  const leaves = h.stats.leaves;
+  c.close();
+  await h.advance(POLL_NEAR_MS, [a]);
+  assert.equal(h.stats.leaves, leaves + 1, 'one leave beacon');
+  assert.deepEqual(a.others(), [], 'removed at once, not after a TTL');
+  a.close();
 });
 
 test('poseOf: shares at most a short stretch of the path', () => {
