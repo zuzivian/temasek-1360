@@ -9,6 +9,7 @@ import { count, load, maxHp, monsoonAt, monsoonLeft, newWorld, save, shopPrice, 
 import type { Update } from '../net/protocol.ts';
 import * as audio from './audio.ts';
 import { LoopbackLink, SocketLink, serverUrl, type Link } from './net.ts';
+import { keyAction } from './keys.ts';
 import { drawPortrait } from './puppets.ts';
 import { EH, EL_COLOR, iso, render, screenToTile, type HitBox, type View } from './render.ts';
 
@@ -136,11 +137,12 @@ function refreshTop(): void {
 
 // ---------- dialogue ----------
 let portraitT = 0;
+let shownNode: string | null = null;
 function showDialog(): void {
   const d = world.dialog;
   $('dialog').hidden = !d;
   $('hud').classList.toggle('talking', !!d || !!world.combat);
-  if (!d) return;
+  if (!d) { shownNode = null; return; }
   const node = DIALOG[d.node];
   const who = node.who;
   const name = who === 'you' ? 'You' : who === 'todak' ? 'Si Todak' : NPCS[who].name;
@@ -149,6 +151,9 @@ function showDialog(): void {
   $('dtext').textContent = node.text;
   const pc = $<HTMLCanvasElement>('portrait'), pctx = pc.getContext('2d')!;
   drawPortrait(pctx, look, pc.width, portraitT);
+  // Rebuild the buttons only for a new line, so keyboard focus survives HUD refreshes.
+  if (shownNode === d.node) return;
+  shownNode = d.node;
   const box = $('dopts');
   box.innerHTML = '';
   const opts2 = node.options?.length ? node.options.map(o => o.label) : ['Continue'];
@@ -159,6 +164,8 @@ function showDialog(): void {
     b.addEventListener('click', () => { audio.play('click'); doAct({ t: 'say', option: i }); });
     box.appendChild(b);
   });
+  // Put focus on the first answer so keyboard players can reply straight away.
+  (box.firstElementChild as HTMLButtonElement | null)?.focus({ preventScroll: true });
 }
 
 // ---------- shop ----------
@@ -211,6 +218,8 @@ function showCombat(): void {
   const myTurn = cur.id === 'you' && c.phase === 'fight';
   const wind = MONSOON_WIND[monsoonAt(world.tick)];
   const abs = $('abilities');
+  // Keep keyboard focus on the same ability button across the rebuild below.
+  const focusedAb = abs.contains(document.activeElement) ? [...abs.children].indexOf(document.activeElement as Element) : -1;
   abs.innerHTML = '';
   you.abilities.forEach((id, i) => {
     const a = ABILITIES[id];
@@ -225,6 +234,7 @@ function showCombat(): void {
     b.addEventListener('click', () => pickAbility(id));
     abs.appendChild(b);
   });
+  if (focusedAb >= 0) (abs.children[focusedAb] as HTMLButtonElement | undefined)?.focus({ preventScroll: true });
   $('ap').innerHTML = Array.from({ length: you.apMax }, (_, i) => `<i class="${i < you.ap && myTurn ? 'on' : ''}"></i>`).join('');
   $('mp').innerHTML = Array.from({ length: you.mpMax }, (_, i) => `<i class="${i < you.mp && myTurn ? 'on' : ''}"></i>`).join('');
   ($('endturn') as HTMLButtonElement).disabled = !myTurn;
@@ -281,7 +291,12 @@ function resolveAttack(g: Grade): void {
   if (g === 'perfect') { banner('Tepat!', 'On the beat · ×1.25', 700); }
   doAct({ t: 'combat', it: { t: 'use', ability: p.ability, target: p.target, grade: g } });
 }
-$('endturn').addEventListener('click', () => { if (view.combatUi.ring) return; audio.play('click'); view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } }); });
+$('endturn').addEventListener('click', ev => {
+  // A mouse click shouldn't leave focus here, or a stray Space next turn would end it.
+  if (ev.detail > 0) $('endturn').blur();
+  if (view.combatUi.ring) return;
+  audio.play('click'); view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } });
+});
 
 // ---------- events from the simulation ----------
 const SFX = new Set(['click', 'step', 'catch', 'xp', 'level', 'coin', 'gong', 'hit', 'perfect', 'miss', 'hurt', 'heal', 'victory', 'defeat', 'quest', 'open', 'splash']);
@@ -471,16 +486,20 @@ addEventListener('keydown', ev => {
   if (!started) return;
   audio.unlock();
   const c = world.combat;
-  if (ev.code === 'Space') {
-    ev.preventDefault();
-    if (view.combatUi.ring) { pressTiming(); return; }
-    if (world.dialog) { const n = DIALOG[world.dialog.node]; if (!n.options?.length) doAct({ t: 'say', option: 0 }); }
-    return;
+  const onButton = ev.target instanceof HTMLButtonElement || ev.target instanceof HTMLInputElement;
+  const act = keyAction({
+    key: ev.key, code: ev.code, onButton, inCombat: !!c, myTurn: !!c && current(c).id === 'you', ring: !!view.combatUi.ring,
+    dialog: !!world.dialog, continueLine: !!world.dialog && !DIALOG[world.dialog.node].options?.length
+  });
+  if (ev.code === 'Space' && !(onButton && !view.combatUi.ring && !world.dialog)) ev.preventDefault();
+  switch (act.t) {
+    case 'timing': pressTiming(); break;
+    case 'say': doAct({ t: 'say', option: act.option }); break;
+    case 'close': doAct({ t: 'close' }); break;
+    case 'cancelAbility': view.combatUi.ability = null; showCombat(); break;
+    case 'endTurn': view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } }); break;
+    case 'ability': { const id = unitById(c!, 'you')!.abilities[act.n - 1]; if (id) pickAbility(id); break; }
   }
-  if (ev.key === 'Escape') { if (c) { view.combatUi.ability = null; showCombat(); } else doAct({ t: 'close' }); return; }
-  if (c && (ev.key === 'e' || ev.key === 'E' || ev.key === 'Enter') && current(c).id === 'you' && !view.combatUi.ring) { view.combatUi.ability = null; doAct({ t: 'combat', it: { t: 'end' } }); return; }
-  if (c && /^[1-9]$/.test(ev.key)) { const you = unitById(c, 'you')!; const id = you.abilities[Number(ev.key) - 1]; if (id) pickAbility(id); return; }
-  if (world.dialog && /^[1-9]$/.test(ev.key)) doAct({ t: 'say', option: Number(ev.key) - 1 });
 });
 
 $('mute').addEventListener('click', () => {
