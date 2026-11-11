@@ -24,6 +24,10 @@ page only sends intents and draws what comes back; open it in two tabs to see a 
 npm run build && node server/main.ts  # http://localhost:8080/?server
 ```
 
+`node scripts/serve.mjs` also answers `/api/world`, the same Vercel function the live site runs, so two
+local tabs share the world there too: same monsoon clock, and you see each other on the beach. Add
+`?offline` to play alone.
+
 Without `?server` the page plays offline: the same rules run in the tab through an in-process
 loopback. If the server can't be reached, or goes away mid-game, the page carries on offline.
 
@@ -33,7 +37,7 @@ never want to time anything. Scroll to zoom. Progress saves to this browser auto
 
 ## Deploy
 
-`main` deploys to Vercel at **temasek.natwong.dev**. The build command is `npm run build`, and Vercel serves the standalone page in `site/`. `artifact/` is the same game shaped for a claude.ai artifact.
+`main` deploys to Vercel at **temasek.natwong.dev**. The build command is `npm run build`, and Vercel serves the standalone page in `site/`. `api/world.ts` is a Vercel function for the shared world (clock and presence); it keeps presence in Upstash Redis when `KV_REST_API_URL` and `KV_REST_API_TOKEN` are set, and in memory otherwise. See NOTES.md for how it stays free. `artifact/` is the same game shaped for a claude.ai artifact.
 
 ## The loop in Act 1
 
@@ -57,9 +61,10 @@ Six elements, each beating the next: **Kayu > Tanah > Angin > Air > Api > Besi >
 | Path | What it is |
 |---|---|
 | `src/sim/` | The game rules. Pure, deterministic and DOM-free: `world.ts` (state, intents, 0.6 s tick), `combat.ts`, `content.ts` (people, items, dialogue, quest, encounters), `map-data.ts` (the ASCII map), `path.ts`, `skills.ts` |
-| `src/net/` | Shared by browser and server: `host.ts` (`GameHost`: one player's world, `submit()` an intent, `tick()` a step, replay a log), `realm.ts` (`Realm`: every connected player on one clock, and who is near whom), `sync.ts` + `delta.ts` (send each client only its World's changes and the players near it) and `protocol.ts` (the wire messages and intent validation) |
+| `src/net/` | Shared by browser and server: `host.ts` (`GameHost`: one player's world, `submit()` an intent, `tick()` a step, replay a log), `realm.ts` (`Realm`: every connected player on one clock, and who is near whom), `sync.ts` + `delta.ts` (send each client only its World's changes and the players near it), `protocol.ts` (the wire messages and intent validation), `clock.ts` (the realm tick from wall-clock time) and `presence.ts` (who is near whom, without a game server) |
+| `api/world.ts` | Vercel function: the shared world's clock and presence (`src/net/presence.ts`, `src/net/clock.ts`). Runs only when a visible tab asks |
 | `server/` | The local game server: `game-server.ts` (static files plus `/ws`, one shared Realm on a 600 ms clock), `ws.ts` (a hand-written WebSocket endpoint, so still no dependencies), `main.ts` (CLI) |
-| `src/client/` | The browser: `main.ts` (loop, input, HUD), `net.ts` (`LoopbackLink` offline, `SocketLink` online), `render.ts` (isometric canvas), `puppets.ts`, `audio.ts` (synthesised gamelan, no audio files) |
+| `src/client/` | The browser: `main.ts` (loop, input, HUD), `net.ts` (`LoopbackLink` offline, `LiveLink` shared world, `SocketLink` game server), `render.ts` (isometric canvas), `puppets.ts`, `audio.ts` (synthesised gamelan, no audio files) |
 | `tests/` | Unit tests plus `bot.ts`, a scripted player that finishes Act 1 |
 | `scripts/` | `build.mjs`, `serve.mjs`, `smoke.mjs` (headless browser playthrough with screenshots), `balance.ts` |
 | `docs/DESIGN.md` | What's decided, what's tentative, what's open, and the cultural notes |

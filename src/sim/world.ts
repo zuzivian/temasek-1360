@@ -439,18 +439,37 @@ export function questTarget(w: World): Vec | null {
   }
 }
 
+function monsoonTurned(w: World, ev: Ev[]): void {
+  const now = monsoonAt(w.tick);
+  ev.push({ t: 'monsoon', m: now }, { t: 'msg', text: `${MONSOON_NAME[now]} arrives. ${now === 'NE' ? 'Rain, and Chinese junks in the river.' : 'Dry skies, and a ship from Gujarat.'}`, tone: 'quest' });
+  if (w.shop && w.shop !== 'rahmah') w.shop = null;
+  const who = w.dialog ? DIALOG[w.dialog.node].who : null;
+  if (who && who !== 'you' && who !== 'todak' && !npcPresent(w, who)) w.dialog = null;
+}
+
+/**
+ * Move this World onto another clock (the shared realm's) without simulating the gap: `tick`
+ * jumps, and every timer that counts in ticks (fight cool-down, respawns) moves with it, so
+ * nothing fires early or late. If the jump lands in the other monsoon, it turns as in step().
+ */
+export function setClock(w: World, tick: number): Ev[] {
+  const d = tick - w.tick, ev: Ev[] = [];
+  if (!d) return ev;
+  const before = monsoonAt(w.tick);
+  w.tick = tick;
+  if (w.calmUntil !== undefined) w.calmUntil += d;
+  for (const e of w.enc) if (!e.alive) e.respawnAt += d;
+  if (monsoonAt(tick) !== before) monsoonTurned(w, ev);
+  return ev;
+}
+
 /** Advance the world by one 0.6 s tick. */
 export function step(w: World, intents: Intent[]): Ev[] {
   const ev: Ev[] = [];
   const before = monsoonAt(w.tick);
   w.tick++;
   const now = monsoonAt(w.tick);
-  if (now !== before) {
-    ev.push({ t: 'monsoon', m: now }, { t: 'msg', text: `${MONSOON_NAME[now]} arrives. ${now === 'NE' ? 'Rain, and Chinese junks in the river.' : 'Dry skies, and a ship from Gujarat.'}`, tone: 'quest' });
-    if (w.shop && w.shop !== 'rahmah') w.shop = null;
-    const who = w.dialog ? DIALOG[w.dialog.node].who : null;
-    if (who && who !== 'you' && who !== 'todak' && !npcPresent(w, who)) w.dialog = null;
-  }
+  if (now !== before) monsoonTurned(w, ev);
   for (const it of intents) handle(w, it, ev);
 
   if (w.combat) {

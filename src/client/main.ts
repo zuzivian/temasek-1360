@@ -8,7 +8,8 @@ import { SKILLS, levelForXp, levelProgress, type SkillId } from '../sim/skills.t
 import { count, load, maxHp, monsoonAt, monsoonLeft, newWorld, save, shopPrice, type Ev, type Intent, type World } from '../sim/world.ts';
 import type { Update } from '../net/protocol.ts';
 import * as audio from './audio.ts';
-import { LoopbackLink, SocketLink, serverUrl, type Link } from './net.ts';
+import { LiveLink, LoopbackLink, SocketLink, liveUrl, serverUrl, type Link } from './net.ts';
+import { tickStart } from '../net/clock.ts';
 import { keyAction } from './keys.ts';
 import { drawPortrait } from './puppets.ts';
 import { EH, EL_COLOR, iso, render, screenToTile, type HitBox, type View } from './render.ts';
@@ -375,7 +376,8 @@ function receive(u: Update): void {
   const before = last;
   world = u.world; view.w = world;
   if (u.kind !== 'tick') { applyEvents(u.ev); afterChange(); remember(); return; }
-  if (link?.online) lastTickAt = performance.now();
+  if (link instanceof LiveLink) lastTickAt = performance.now() - (Date.now() + link.offsetMs - tickStart(world.tick));
+  else if (link?.online) lastTickAt = performance.now();
   view.playerFrom = before.player; view.lawakFrom = before.lawak;
   view.othersFrom = new Map(view.others.map(o => [o.id, { x: o.x, y: o.y }]));
   view.others = u.others;
@@ -520,8 +522,8 @@ function begin(fresh: boolean): void {
   audio.unlock();
   audio.setMuted(!opts.sound);
   $('mute').textContent = opts.sound ? '♪' : '✕';
-  const url = serverUrl(location);
-  if (!url) {
+  const url = serverUrl(location), live = url ? null : liveUrl(location);
+  if (!url && !live) {
     if (fresh) world = newWorld(Math.floor(Math.random() * 1e9));
     playOffline();
     enter(fresh);
@@ -530,7 +532,26 @@ function begin(fresh: boolean): void {
   connecting = true;
   const btn = $(fresh ? 'start' : 'continue'), label = btn.textContent;
   btn.textContent = 'Connecting…';
-  SocketLink.connect(url, fresh ? {} : { save: save(world) }, receive).then(({ link: sl, welcome }) => {
+  if (live) {
+    // The shared world: the rules run here, on the realm clock, with presence from api/world.
+    if (fresh) world = newWorld(Math.floor(Math.random() * 1e9));
+    LiveLink.connect(world, receive, {
+      url: live, fetch: (u, init) => fetch(u, init),
+      // A plain string goes as text/plain, which a beacon may send without a CORS preflight.
+      beacon: (u, body) => { navigator.sendBeacon(u, body); }
+    }).then(ll => {
+      link = ll;
+      ll.setVisible(!document.hidden);
+      world = ll.world;
+      enter(fresh);
+      log('You are in the shared world: other players on this beach appear as faded puppets.', 'info');
+    }, () => {
+      playOffline();
+      enter(fresh);
+    }).finally(() => { connecting = false; btn.textContent = label; });
+    return;
+  }
+  SocketLink.connect(url!, fresh ? {} : { save: save(world) }, receive).then(({ link: sl, welcome }) => {
     link = sl;
     sl.onLost = () => {
       log('Lost the game server. Playing on offline from here.', 'warn');
@@ -562,7 +583,16 @@ function enter(fresh: boolean): void {
 }
 $('start').addEventListener('click', () => begin(true));
 $('continue').addEventListener('click', () => begin(false));
-document.addEventListener('visibilitychange', () => { if (!started) return; if (document.hidden) writeSave(); else lastTickAt = performance.now(); });
+document.addEventListener('visibilitychange', () => {
+  if (link instanceof LiveLink) link.setVisible(!document.hidden);
+  if (!started) return;
+  if (document.hidden) writeSave(); else lastTickAt = performance.now();
+});
+// Any input counts as being here (camera moves too, not just intents), so an idle tab can rejoin.
+for (const t of ['pointerdown', 'keydown', 'wheel'] as const) addEventListener(t, () => { if (link instanceof LiveLink) link.touch(); }, { passive: true });
+// Closing (or navigating away from) the page leaves the world at once; hiding it only goes away.
+addEventListener('pagehide', () => { if (link instanceof LiveLink) link.close(); });
+addEventListener('pageshow', ev => { if (ev.persisted && link instanceof LiveLink) link.reopen(); });
 
 // ---------- main loop ----------
 let lastFrame = performance.now();
@@ -572,7 +602,8 @@ function frame(now: number): void {
   portraitT += dt;
   if (started) {
     // Offline, this tab owns the clock; online, ticks arrive from the server (see receive()).
-    if (link instanceof LoopbackLink) {
+    if (link instanceof LiveLink) link.pump();
+    else if (link instanceof LoopbackLink) {
       let guard = 0;
       while (now - lastTickAt >= TICK_MS && guard++ < (world.combat ? 1 : 5)) {
         lastTickAt += TICK_MS;
@@ -599,6 +630,10 @@ requestAnimationFrame(frame);
 (window as unknown as { __game: unknown }).__game = {
   get world() { return world; },
   get online() { return !!link?.online; },
+  /** 'live' (shared world via api/world), 'server' (WebSocket game server) or 'offline'. */
+  get mode() { return link instanceof LiveLink ? 'live' : link?.online ? 'server' : 'offline'; },
+  /** The live link, for tests: its id, clock offset and request count. */
+  get live() { return link instanceof LiveLink ? { you: link.you, offsetMs: link.offsetMs, posts: link.posts, active: link.active } : null; },
   /** Other players in view (online only). */
   get others() { return view.others; },
   act: (it: Intent) => doAct(it),

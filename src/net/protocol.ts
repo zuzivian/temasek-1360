@@ -21,7 +21,8 @@ export type Hello = { t: 'hello'; v: number; save?: string; seed?: number };
 export type ClientMsg = Hello | { t: 'intent'; it: Intent };
 
 /** What another player looks like from nearby. Their World stays on the server. */
-export type Avatar = { id: number; x: number; y: number; facing: 1 | -1; fishing?: number; fighting?: boolean };
+/** away: their tab is hidden or idle (shared world only); drawn dimmed where they were last seen. */
+export type Avatar = { id: number; x: number; y: number; facing: 1 | -1; fishing?: number; fighting?: boolean; away?: boolean };
 
 export type Welcome = { t: 'welcome'; you: number; world: World; others: Avatar[] };
 export type UpdateKind = 'act' | 'tick';
