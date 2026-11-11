@@ -38,7 +38,8 @@ try {
   await page.waitForTimeout(9000);
   await page.screenshot({ path: 'smoke/4-fishing.png' });
   // sell fish through the real shop UI
-  await page.evaluate(() => { const w = window.__game.world; if (w.step < 2) { w.step = 2; w.fishCaught = 3; } w.player.x = 17; w.player.y = 25; window.__game.act({ t: 'talk', npc: 'rahmah' }); });
+  // The catch is random: with an unlucky seed 9 s of fishing lands nothing, so make sure there is a fish to sell.
+  await page.evaluate(() => { const w = window.__game.world; if (w.step < 2) { w.step = 2; w.fishCaught = 3; } if (!w.inv.some(s => s.id === 'kembung' || s.id === 'selar' || s.id === 'udang' || s.id === 'kerapu')) w.inv.push({ id: 'kembung', n: 1 }); w.player.x = 17; w.player.y = 25; window.__game.act({ t: 'talk', npc: 'rahmah' }); });
   await page.waitForTimeout(1500);
   await page.click('#dopts button:not(.next)');
   await page.waitForTimeout(300);

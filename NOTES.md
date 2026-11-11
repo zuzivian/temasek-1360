@@ -212,8 +212,8 @@ A code review found 7 issues, all fixed:
 - **Deltas assume an ordered, lossless channel** (one WebSocket). The Outbox diffs against what it last *sent*, so
   never skip sending a message it built, or the client's copy drifts. If a transport ever drops messages, resend a
   welcome.
-- **Smoke flake:** the offline "selling earned nothing" check failed once in 5 branch runs (random seed: no fish in
-  9 s). That code is unchanged from `main`; not fixed here.
+- **Smoke "selling earned nothing" (fixed 11 Nov):** with an unlucky seed, 9 s of fishing caught nothing, so the sell
+  check failed (it hit CI on this branch). Smoke now adds one fish if the bag has none; reproduced with 0 s of fishing first.
 - **Player ids are per server run**, not accounts; they restart at 1 when the server restarts.
 - **Online dodge windows include latency.** The client opens the dodge ring when the windup tick *arrives* and
   closes it at the next one. The intent must reach the server before its next tick, so a slow link shortens the
