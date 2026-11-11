@@ -177,7 +177,16 @@ function harness(opts0: { own?: boolean } = {}) {
   const t = { now: tickStart(1_433_000) + 123 };
   let timers: { at: number; fn: () => void; id: number }[] = [], nextId = 1;
   const store = new MemoryStore(), stats = { posts: 0, beats: 0, leaves: 0 };
-  const fetchFn: LiveOpts['fetch'] = async (url, init) => {
+  // Every request in flight, so settle() can wait for them all instead of guessing how long they take.
+  const inflight = new Set<Promise<unknown>>();
+  const track: LiveOpts['fetch'] = (url, init) => {
+    const p = fetchRaw(url, init);
+    inflight.add(p);
+    // Remove it a turn after it lands, once the caller's own continuation has run.
+    void p.finally(() => setTimeout(() => inflight.delete(p), 0)).catch(() => {});
+    return p;
+  };
+  const fetchRaw: LiveOpts['fetch'] = async (url, init) => {
     if (init?.body) { const b = JSON.parse(init.body); if (b.leave) stats.leaves++; else if (b.beat) stats.beats++; else stats.posts++; }
     if (opts0.own) {
       const r = init?.method === 'POST' ? await handlePresence(store, JSON.parse(init.body!), t.now) : clockReply(store, t.now);
@@ -189,6 +198,7 @@ function harness(opts0: { own?: boolean } = {}) {
     const body = await res.json() as PresenceRes;
     return { ok: res.ok, status: res.status, json: async () => ({ ...body, now: t.now }) };
   };
+  const fetchFn = track;
   const opts = (): LiveOpts => ({
     url: '/api/world', fetch: fetchFn, now: () => t.now,
     beacon: (url, body) => { void fetchFn(url, { method: 'POST', body }); },
@@ -196,7 +206,15 @@ function harness(opts0: { own?: boolean } = {}) {
     clearTimer: h => { timers = timers.filter(x => x.id !== h); }
   });
   /** Move the clock on, firing timers that come due and letting their requests settle. */
-  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); };
+  /** Wait until no request is in flight (and what each one triggered has run). */
+  const settle = async () => {
+    for (let guard = 0; guard < 1000; guard++) {
+      await new Promise(r => setTimeout(r, 0));
+      if (!inflight.size) { await new Promise(r => setTimeout(r, 0)); if (!inflight.size) return; }
+      else await Promise.allSettled([...inflight]);
+    }
+    throw new Error('requests never settled');
+  };
   const advance = async (ms: number, links: LiveLink[] = []) => {
     await settle(); // let requests already in flight land (and schedule their next timer) first
     const end = t.now + ms;
@@ -206,12 +224,12 @@ function harness(opts0: { own?: boolean } = {}) {
       if (!next || next.at > end) break;
       t.now = next.at; timers.shift();
       next.fn();
-      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+      await settle();
       for (const l of links) l.pump();
     }
     t.now = end;
     for (const l of links) l.pump();
-    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+    await settle();
   };
   const pending = () => timers.length;
   return { t, opts, advance, pending, store, stats, settle };

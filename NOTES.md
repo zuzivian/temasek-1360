@@ -159,15 +159,16 @@ monsoon name and countdown (±1 s), a hidden page leaves and stops posting, a lo
   - dialogue with portraits, shop, combat bar with timing rings, Auto timing option
   - synthesised gamelan sound effects, rain bed and festival ambience
 - **Checks:**
-  - `npm test`: 12 tests (including regressions for the review fixes), including a bot that finishes Act 1 on 5 seeds
+  - `npm test`: 13 tests (including regressions for the review fixes), including a bot that finishes Act 1 on 5 seeds
   - `scripts/smoke.mjs`: drives the real UI through dialogue, shop and a full fight with clicks
   - `scripts/balance.ts`
   - CI workflow: typecheck, test, build, balance, then smoke with Playwright
 
-## Balance at the time of writing (`node scripts/balance.ts 40`)
+## Balance (`node scripts/balance.ts 40`, 7 Nov 2026)
 
 - A bot with no timing and 3 jamu finishes 40/40 with no losses.
-- With no timing and no jamu it loses to Si Todak about once per run on average, before winning on a retry. That's 15 losses in 30 runs after the review fixes, up from 5 in 40 before. The likely cause is the 8-tick pause between fights, which stops the boss starting while you're still mid-patrol; not investigated further.
+- With no timing and no jamu it loses to Si Todak 5 times in 40 runs, then wins on a retry
+  (fixed 7 Nov; it had risen to 22 in 40 after the review fixes, see below).
 - Act 1 ends around Pancing 5, Dagang 3, Silat 3.
 - The bot needs about 2.5 minutes of game time. A human with reading and walking should take
   roughly 10–15 minutes (not measured).
@@ -182,6 +183,34 @@ A code review found 7 issues, all fixed:
 - **Wasted jamu:** you could drink it at full health.
 - **Lost attack:** clicking End turn while the timing ring was open threw the attack away.
 
+## Boss-start fix (7 Nov, autopilot)
+
+- **Cause of the extra boss losses:** the 8-tick calm after a fight held back *every*
+  encounter. Walking east straight after the patrol carried you past Si Todak's 2-tile trigger to
+  the arena centre (38,22), 3 tiles from him instead of 5, so the fight opened at close range. Retries started at
+  the edge, which is why they won.
+- **Fix (`src/sim/world.ts`):** `calmFor` records the zones you were standing in when a won fight
+  ended. Only those wait out the calm; a zone you walk into during it starts at its edge. Old saves
+  without `calmFor` keep the old behaviour.
+- **Test:** `after a fight, the calm only holds back encounters you were already standing in`. It
+  fails on the old code.
+
+## Keyboard fixes (7 Nov, autopilot run 2)
+
+- **Enter on a focused ability button ended your turn.** The global Enter = End turn shortcut fired as
+  well as the button. A focused button now owns Enter, and Space too, except during a timing ring or
+  an open dialogue (so mashing Space through a conversation never picks an answer).
+- **Focus was wiped on every HUD refresh.** Dialogue buttons are now rebuilt only for a new line, and
+  the first answer gets focus. The focused ability button keeps focus across rebuilds. A mouse click on
+  End turn drops focus, so a stray Space next turn can't end it.
+- The Bag/Skills/Quest buttons claimed `role="tablist"` without being tabs; now a labelled group of
+  toggle buttons.
+- **Check:** `scripts/smoke.mjs` presses Enter on an ability button in the first fight. It fails on the
+  old code.
+- **Smoke flake fixed:** a move click on a tile covered on screen by a puppet standing in front
+  (often Pak Lawak, whose spot depends on the random seed) picks the unit instead. The test now tries
+  the next tile until the step lands.
+
 ## Not done / next
 
 1. **Nat playtest by hand:**
@@ -190,6 +219,7 @@ A code review found 7 issues, all fixed:
    - timing ring windows (attack: perfect within ±0.09 s, good within ±0.22 s)
    - text length
    - sound levels (never heard by a human)
+   - keyboard only: Tab to the dialogue answers and abilities, Enter to press them
 2. **Decide the tentative calls** in `docs/DESIGN.md`, especially who the player is, and the
    pirate lords.
 3. **Networking roadmap:**
@@ -203,7 +233,6 @@ A code review found 7 issues, all fixed:
 4. **Content:** Act 2 (6–8 acts per chapter), the kite gate, festival minigames (gasing, kite
    duels, sepak takraw, boat races), more skills one monsoon at a time.
 5. **Repo:** the game lives in `zuzivian/temasek-1360` (moved from a branch of `zuzivian/new-repo` on 1 Nov 2026). The old local branch there was never pushed.
-   prototypes. Consider giving the game its own repo, as Derby Day and Ring Studio got.
 
 ## Gotchas
 
