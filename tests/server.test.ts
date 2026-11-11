@@ -240,8 +240,19 @@ test('server: the Act 1 bot finishes the act playing only through the socket', a
     }
     assert.ok(w && act1Done(w), `finished Act 1 over the socket (step ${w?.step}, tick ${w?.tick})`);
     assert.ok(fights >= 2, 'fought the patrol and Si Todak');
-    // The patched copy the bot played from is exactly the server's World.
-    assert.equal(save(w), save(srv.realm.world(c.you())!));
+    // The patched copy the bot played from is exactly the server's World. The server keeps ticking
+    // on its own timer while we read, so under load it can be a tick or more ahead of the last
+    // message we took (its newer ticks are still in flight). Only compare a client copy and the
+    // server's World at the same tick: keep taking messages until the copy has caught up with the
+    // server at the instant a message is applied. The equality itself is unchanged.
+    let same = false;
+    for (let n = 0; n < 5000 && !same; n++) {
+      const server = srv.realm.world(c.you())!;
+      if (w!.tick === server.tick) { assert.equal(save(w!), save(server)); same = true; break; }
+      assert.ok(w!.tick < server.tick, 'the client never runs ahead of the server');
+      w = (await c.next(5000)).world;
+    }
+    assert.ok(same, 'the client copy caught up with the server tick to compare');
     c.ws.close();
   } finally { await srv.close(); }
 });
